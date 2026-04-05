@@ -16,6 +16,11 @@ STYLE_REGULAR = "Arial,20,&H00FFFFFF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1
 
 # --- IMPROVED PROGRESS BAR (Speed, %, ETA) ---
 async def progress_bar(current, total, status_msg, start_time, action):
+    chat_id = status_msg.chat.id
+    # Check if the user clicked "Stop" - if so, raise an error to kill the download/upload
+    if chat_id not in user_data:
+        raise Exception("STOP_PROCESS")
+
     now = time.time()
     diff = now - start_time
     if round(diff % 4.00) == 0 or current == total:
@@ -23,21 +28,23 @@ async def progress_bar(current, total, status_msg, start_time, action):
         speed = current / diff if diff > 0 else 0
         eta = round((total - current) / speed) if speed > 0 else 0
         
-        elapsed_str = time.strftime('%M:%S', time.gmtime(round(diff)))
         eta_str = time.strftime('%M:%S', time.gmtime(eta))
+        # Neon Slider Design
+        completed = int(15 * current / total)
+        bar = "━" * completed + "○" + "─" * (15 - completed)
         
-        blocks = int(percentage / 10)
-        bar = "█" * blocks + "░" * (10 - blocks)
-        
+        icon = "💠" if "Down" in action else "❇️" if "Up" in action else "⚙️"
         msg = (
-            f"⚙️ **{action}...**\n\n"
-            f"**[{bar}]** {percentage:.1f}%\n"
-            f"🚀 Speed: {current/1024/1024/diff:.2f} MB/s\n"
-            f"⏳ ETA: {eta_str} | Time: {elapsed_str}"
+            f"{icon} **{action.upper()}**\n"
+            f"<code>{bar}</code>  **{percentage:.1f}%**\n\n"
+            f"⚡️ `{current/1024/1024/diff:.2f} MB/s`  •  ⏳ `{eta_str}`\n"
+            f"📦 `{current/1024/1024:.1f}` / `{total/1024/1024:.1f} MiB`"
         )
-        try: await status_msg.edit(msg)
+        
+        # Add the STOP button
+        reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("❌ Stop Process", callback_data="stop_all")]])
+        try: await status_msg.edit(msg, reply_markup=reply_markup)
         except: pass
-
 # --- COMMANDS ---
 @app.on_message(filters.command("style") & filters.private)
 async def style_mode(client, message):
@@ -119,6 +126,17 @@ async def get_name(client, message):
         await message.reply("🖼 Send **Thumbnail** or /skip.")
 
 @app.on_message((filters.photo | filters.command("skip")) & filters.private)
+
+@app.on_callback_query(filters.regex("stop_all"))
+async def stop_callback(client, callback_query):
+    chat_id = callback_query.from_user.id
+    if chat_id in user_data:
+        # Deleting user_data acts as a signal to the progress bar to stop everything
+        del user_data[chat_id]
+        await callback_query.message.edit("🛑 **Process Terminated.**\nAll temporary data cleared.")
+    else:
+        await callback_query.answer("No active process found.", show_alert=True)
+
 async def start_muxing(client, message):
     chat_id = message.from_user.id
     if user_data.get(chat_id, {}).get("step") != "thumb": return
