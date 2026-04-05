@@ -1,3 +1,6 @@
+import http.server
+import socketserver
+import threading
 import os
 import time
 import subprocess
@@ -140,5 +143,13 @@ async def process_final(client, message):
         if f and os.path.exists(f): os.remove(f)
     del user_data[chat_id]
     await status.delete()
+# Function to satisfy Hugging Face's port requirement
+def start_server():
+    with socketserver.TCPServer(("", 7860), http.server.SimpleHTTPRequestHandler) as httpd:
+        httpd.serve_forever()
 
+# Run the "fake" web server in the background
+threading.Thread(target=start_server, daemon=True).start()
+
+print("FrictionBot is officially Live! 🚀")
 app.run()
