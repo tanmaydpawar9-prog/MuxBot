@@ -90,7 +90,20 @@ async def convert_sub(client, callback_query):
     style = STYLE_CINEMATIC if "cin" in data else STYLE_REGULAR
     
     # FFmpeg conversion without forcing resolution
-    subprocess.run(["ffmpeg", "-i", s_path, "-vf", f"subtitles={s_path}:force_style='{style}'", out_ass, "-y"])
+    # Define your custom track name
+    track_name = "ENGLISH @TheFrictionRealm"
+    
+    await status.edit("⚡ **Muxing with Custom Track Name...**")
+    
+    # Updated FFmpeg command with metadata
+    subprocess.run([
+        "ffmpeg", "-i", v_path, "-i", s_path, 
+        "-map", "0", "-map", "1", 
+        "-c", "copy", "-c:s", "ass", 
+        "-metadata:s:s:0", f"title={track_name}", # <-- This names the track
+        "-metadata:s:s:0", "language=eng",        # <-- This sets the language code
+        output, "-y"
+    ])
     
     await client.send_document(chat_id, out_ass, caption="✅ Converted! Use /mux now.")
     os.remove(s_path); os.remove(out_ass)
