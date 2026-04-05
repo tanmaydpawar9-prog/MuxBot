@@ -153,4 +153,5 @@ async def finalize(client, message):
 def start_server():
     socketserver.TCPServer(("", 7860), http.server.SimpleHTTPRequestHandler).serve_forever()
 
-threading.Thread(target=start_server, daemon=
+threading.Thread(target=start_server, daemon=True).start()
+app.run()
