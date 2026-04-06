@@ -134,12 +134,6 @@ async def main_handler(client, message):
             await finalize_mux(client, message, chat_id)
 
 async def finalize_mux(client, message, chat_id):
-    # Deep Clean Workspace
-    for file in glob.glob("*.*"):
-        if file.endswith((".mkv", ".mp4", ".ass", ".srt", ".jpg")):
-            try: os.remove(file)
-            except: pass
-            
     status = await message.reply("🚀 **Initializing...**")
     v_p = s_p = out = th = None
     try:
@@ -147,34 +141,55 @@ async def finalize_mux(client, message, chat_id):
         v_msg = await client.get_messages(chat_id, data["video_id"])
         s_msg = await client.get_messages(chat_id, data["sub_id"])
         
+        # 1. DOWNLOAD VIDEO (With Bar)
         v_p = await client.download_media(v_msg, progress=progress_bar, progress_args=(status, time.time(), "Downloading"))
+        
+        # 2. DOWNLOAD SUB & THUMB (Fast, no bar needed)
         s_p = await client.download_media(s_msg)
         th = await client.download_media(message.photo) if message.photo else None
         out = data["out_name"]
         
-        await status.edit("⚡ **Muxing...**")
-        track = "ENGLISH @TheFrictionRealm"
+        # 3. MUXING (FFmpeg)
+        await status.edit("⚡ **Muxing Streams...**", 
+                           reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✖️ CANCEL ✖️", callback_data="stop_all")]]))
         
+        track = "ENGLISH @TheFrictionRealm"
         subprocess.run([
             "ffmpeg", "-i", v_p, "-i", s_p,
             "-map", "0:v:0", "-map", "0:a:0", "-map", "1:s:0",
             "-c:v", "copy", "-c:a", "copy", "-c:s", "ass",
-            "-disposition:s:0", "default", "-metadata:s:s:0", f"title={track}",
-            "-metadata:s:s:0", "language=eng", out, "-y"
+            "-disposition:s:0", "default", 
+            "-metadata:s:s:0", f"title={track}",
+            "-metadata:s:s:0", "language=eng", 
+            out, "-y"
         ], check=True)
         
-        if not os.path.exists(out) or os.path.getsize(out) < 1000: raise Exception("FFmpeg failed to create file.")
-        
-        await status.edit("📤 **Uploading...**")
-        await client.send_document(chat_id, out, thumb=th, caption=f"**{out}**\n\n@TheFrictionRealm", progress=progress_bar, progress_args=(status, time.time(), "Uploading"))
+        # 4. UPLOADING (FIXED: This now has the progress_bar)
+        await status.edit("📤 **Preparing Upload...**")
+        await client.send_document(
+            chat_id, 
+            out, 
+            thumb=th, 
+            caption=f"**{out}**\n\n@TheFrictionRealm", 
+            progress=progress_bar, 
+            progress_args=(status, time.time(), "Uploading")
+        )
+
     except Exception as e:
-        if str(e) != "STOP_PROCESS": await message.reply(f"❌ Error: {e}")
+        if str(e) != "STOP_PROCESS": 
+            await message.reply(f"❌ **Error:** {e}")
     
+    # --- CLEANUP SECTION ---
     for f in [v_p, s_p, out, th]:
-        if f and os.path.exists(f): os.remove(f)
-    if chat_id in user_data: del user_data[chat_id]
-    try: await status.delete()
-    except: pass
+        if f and os.path.exists(f): 
+            try: os.remove(f)
+            except: pass
+    if chat_id in user_data: 
+        del user_data[chat_id]
+    try: 
+        await status.delete()
+    except: 
+        pass
 
 def start_server():
     socketserver.TCPServer(("", 7860), http.server.SimpleHTTPRequestHandler).serve_forever()
