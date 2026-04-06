@@ -7,7 +7,8 @@ API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-ADMIN_ID = 123456789  # <--- CHANGE TO YOUR ID
+# --- AUTHORIZED ADMIN ---
+ADMIN_ID = 2115729865
 AUTHORIZED_USERS = [ADMIN_ID]
 
 app = Client("FrictionBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
@@ -95,7 +96,7 @@ async def main_handler(client, message):
         elif data["step"] == "thumb" and (message.photo or "/skip" in message.text):
             await finalize_mux(client, message, chat_id)
 
-# --- SUBTITLE PROCESSING (NO _STYLED) ---
+# --- SUBTITLE PROCESSING ---
 async def start_sub_process(client, msg, chat_id, task):
     work_dir = f"work_sub_{chat_id}_{int(time.time())}"
     os.makedirs(work_dir, exist_ok=True)
@@ -105,7 +106,6 @@ async def start_sub_process(client, msg, chat_id, task):
         s_msg = await client.get_messages(chat_id, data["sub_id"])
         s_p = await client.download_media(s_msg, file_name=f"{work_dir}/input.srt")
         
-        # FIX: Keep exact name, only change extension
         base_name = data["orig_sub_name"].rsplit('.', 1)[0]
         ext = "ass" if task == "style" else data["ext"]
         out = os.path.join(work_dir, f"{base_name}.{ext}")
@@ -120,12 +120,13 @@ async def start_sub_process(client, msg, chat_id, task):
         else:
             subprocess.run(["ffmpeg", "-i", s_p, out, "-y"])
 
-        await client.send_document(chat_id, out, caption=f"✅ {task.capitalize()}ed!")
+        await client.send_document(chat_id, out, caption=f"✅ Done!")
     except Exception as e: await msg.reply(f"❌ Error: {e}")
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
         if chat_id in user_data: del user_data[chat_id]
-        await status.delete()
+        try: await status.delete()
+        except: pass
 
 # --- MUXING PROCESS ---
 async def finalize_mux(client, message, chat_id):
@@ -150,10 +151,16 @@ async def finalize_mux(client, message, chat_id):
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
         if chat_id in user_data: del user_data[chat_id]
-        await status.delete()
+        try: await status.delete()
+        except: pass
 
 # --- SERVER ---
 def start_server():
-    socketserver.TCPServer(("", 7860), http.server.SimpleHTTPRequestHandler).serve_forever()
+    try:
+        server = socketserver.TCPServer(("", 7860), http.server.SimpleHTTPRequestHandler)
+        server.serve_forever()
+    except: pass
+
 threading.Thread(target=start_server, daemon=True).start()
+print("Bot is starting...")
 app.run()
