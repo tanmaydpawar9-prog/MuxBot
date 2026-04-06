@@ -138,8 +138,22 @@ async def finalize_mux(client, message, chat_id):
         thumb = await client.download_media(message.photo) if message.photo else None
         out_file = data["filename"]
         await status.edit("⚡ **Muxing...**")
-        subprocess.run(["ffmpeg", "-i", v_path, "-i", s_path, "-map", "0", "-map", "1", "-c", "copy", 
-                        "-metadata:s:s:0", "title=ENGLISH @TheFrictionRealm", out_file, "-y"])
+        # --- THE FIX: SPECIFIC STREAM MAPPING ---
+        track_name = "ENGLISH @TheFrictionRealm"
+        
+        subprocess.run([
+            "ffmpeg", "-i", v_path, "-i", s_path,
+            "-map", "0:v:0",              # Take ONLY the 4K Video (Stream 0)
+            "-map", "0:a:0",              # Take ONLY the Primary Audio (Stream 1)
+            "-map", "1:s:0",              # Take ONLY your NEW Synced Subtitle
+            "-c:v", "copy",               # Direct Copy Video (No Re-encoding)
+            "-c:a", "copy",               # Direct Copy Audio (No Re-encoding)
+            "-c:s", "ass",                # Force Subtitle to ASS Format
+            "-disposition:s:0", "default", # Make this sub the Default
+            "-metadata:s:s:0", f"title={track_name}",
+            "-metadata:s:s:0", "language=eng",
+            output, "-y"
+        ], check=True)
         await status.edit("📤 **Uploading...**")
         await client.send_document(chat_id, out_file, thumb=thumb, caption=f"**{out_file}**\n\n@TheFrictionRealm", 
                                    progress=progress_bar, progress_args=(status, time.time(), "Uploading"))
