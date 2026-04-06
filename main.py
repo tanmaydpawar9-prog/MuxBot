@@ -8,7 +8,7 @@ API_HASH = os.getenv("API_HASH")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 # --- ACCESS CONTROL ---
-ADMIN_ID = 123456789  # <--- REPLACE WITH YOUR ID
+ADMIN_ID = 2115729865  # <--- REPLACE WITH YOUR ID
 AUTHORIZED_USERS = [ADMIN_ID] # Add subscriber IDs here
 
 app = Client("FrictionBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
