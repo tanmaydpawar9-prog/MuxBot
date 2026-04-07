@@ -64,25 +64,33 @@ CANCEL_BTN = InlineKeyboardMarkup(
 
 # --- CANCELLATION CHECK ---
 def _check_cancelled(chat_id: int):
- def generate_friction_caption(filename):
+ def generate_friction_caption(filename: str) -> str:
     try:
-        clean_name = filename.replace(".mkv", "").replace(".mp4", "")
-        quality = "4K" if "4K" in clean_name.upper() else "1080p"
-        ep_match = re.search(r"EP(\d+)", clean_name, re.IGNORECASE)
-        ep_no = ep_match.group(1) if ep_match else "???"
-        name_part = clean_name.split("EP")[0].strip()
+        # Clean the name for the title
+        clean = re.sub(r"\.(mkv|mp4)$", "", filename, flags=re.IGNORECASE)
         
-        # Adding the '>' creates the Blockquote effect in Telegram
+        # Extract Episode Number
+        ep_match = re.search(r"EP\s*(\d+)", clean, re.IGNORECASE)
+        ep_no = ep_match.group(1) if ep_match else "???"
+        
+        # Extract Quality
+        q_match = re.search(r"\b(4K|2K|1080p|720p)\b", clean, re.IGNORECASE)
+        quality = q_match.group(1).upper() if q_match else "4K"
+        
+        # Extract Name (Everything before 'EP')
+        name_part = re.split(r"EP\s*\d+", clean, flags=re.IGNORECASE)[0]
+        name_part = re.sub(r"[\[\(][^\]\)]*[\]\)]", "", name_part).strip(" -_").title()
+
+        # The '>' creates the greenish quote block in Telegram
         return (
             f"**{name_part}**\n\n"
-            f"**Episode :** {ep_no}\n"
-            f"**Quality :** {quality}\n"
-            f"**Subtitles :** INBUILT"
+            f"> **EPISODE {ep_no}**\n"
+            f"> **QUALITY : {quality}**\n"
+            f"> **SUBTITLE : INBUILT**"
         )
     except:
         return f"**{filename}**\n\n@TheFrictionRealm"
-   if chat_id in _cancelled:
-        raise asyncio.CancelledError("Cancelled by user.")
+        
 
 
 # --- PROGRESS BAR ---
