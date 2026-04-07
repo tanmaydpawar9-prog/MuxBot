@@ -59,33 +59,29 @@ CANCEL_BTN = InlineKeyboardMarkup(
 
 
 # --- SMART CAPTION ---
-def generate_friction_caption(filename: str) -> str:
-    try:
-        clean = re.sub(r"\.(mkv|mp4)$", "", filename, flags=re.IGNORECASE)
 
-        ep_match = re.search(r"EP\s*(\d+)", clean, re.IGNORECASE)
-        ep_no = ep_match.group(1) if ep_match else "???"
-
-        q_match = re.search(r"\b(4K|2K|1080p|720p|480p)\b", clean, re.IGNORECASE)
-        quality = q_match.group(1).upper() if q_match else "4K"
-
-        name_part = re.split(r"EP\s*\d+", clean, flags=re.IGNORECASE)[0]
-        name_part = re.sub(r"[\[\(][^\]\)]*[\]\)]", "", name_part).strip(" -_")
-        name_part = name_part.title()
-
-        return (
-            f"**{name_part}**\n\n"
-            f"> **Episode :** {ep_no}\n"
-            f"> **Quality :** {quality}\n"
-            f"> **Subtitles :** INBUILT"
-        )
-    except Exception:
-        return f"**{filename}**\n\n@TheFrictionRealm"
 
 
 # --- CANCELLATION CHECK ---
 def _check_cancelled(chat_id: int):
-    if chat_id in _cancelled:
+ def generate_friction_caption(filename):
+    try:
+        clean_name = filename.replace(".mkv", "").replace(".mp4", "")
+        quality = "4K" if "4K" in clean_name.upper() else "1080p"
+        ep_match = re.search(r"EP(\d+)", clean_name, re.IGNORECASE)
+        ep_no = ep_match.group(1) if ep_match else "???"
+        name_part = clean_name.split("EP")[0].strip()
+        
+        # Adding the '>' creates the Blockquote effect in Telegram
+        return (
+            f"**{name_part}**\n\n"
+            f"**Episode :** {ep_no}\n"
+            f"**Quality :** {quality}\n"
+            f"**Subtitles :** INBUILT"
+        )
+    except:
+        return f"**{filename}**\n\n@TheFrictionRealm"
+   if chat_id in _cancelled:
         raise asyncio.CancelledError("Cancelled by user.")
 
 
@@ -221,7 +217,6 @@ async def main_handler(client, message):
             await message.reply(
                 "✅ **Subtitle received.**\n\n"
                 "Type the final output name (without extension):\n"
-                "`SWALLOWED STAR EP218 [4K][TheFrictionRealm]`"
             )
 
         elif step == "name" and message.text:
