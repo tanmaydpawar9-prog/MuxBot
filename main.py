@@ -13,8 +13,8 @@ from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 # --- CONFIG ---
-API_ID   = int(os.getenv("API_ID"))
-API_HASH = os.getenv("API_HASH")
+API_ID    = int(os.getenv("API_ID"))
+API_HASH  = os.getenv("API_HASH")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 ADMIN_ID = 2115729865
@@ -29,6 +29,8 @@ app = Client(
 )
 
 user_data: dict = {}
+_last_edit: dict[int, float] = {}
+_cancelled: set[int] = set()
 
 # --- ASS HEADERS ---
 HEADER_CINEMATIC = (
@@ -60,29 +62,40 @@ CANCEL_BTN = InlineKeyboardMarkup(
 def generate_friction_caption(filename: str) -> str:
     try:
         clean = re.sub(r"\.(mkv|mp4)$", "", filename, flags=re.IGNORECASE)
-        quality = "4K" if re.search(r"4K", clean, re.IGNORECASE) else "1080p"
+
         ep_match = re.search(r"EP\s*(\d+)", clean, re.IGNORECASE)
         ep_no = ep_match.group(1) if ep_match else "???"
-        name_part = re.split(r"EP\s*\d+", clean, flags=re.IGNORECASE)[0].strip(" -_")
+
+        q_match = re.search(r"\b(4K|2K|1080p|720p|480p)\b", clean, re.IGNORECASE)
+        quality = q_match.group(1).upper() if q_match else "4K"
+
+        name_part = re.split(r"EP\s*\d+", clean, flags=re.IGNORECASE)[0]
+        name_part = re.sub(r"[\[\(][^\]\)]*[\]\)]", "", name_part).strip(" -_")
+        name_part = name_part.title()
+
         return (
             f"**{name_part}**\n\n"
-            f"**EPISODE:** `{ep_no}`\n"
-            f"**QUALITY:** `{quality}`\n"
-            f"**SUBTITLES:** `INBUILT`\n\n"
-            f"@TheFrictionRealm"
+            f"> **Episode :** {ep_no}\n"
+            f"> **Quality :** {quality}\n"
+            f"> **Subtitles :** INBUILT"
         )
     except Exception:
         return f"**{filename}**\n\n@TheFrictionRealm"
 
 
-# --- PROGRESS BAR ---
-_last_edit: dict[int, float] = {}
+# --- CANCELLATION CHECK ---
+def _check_cancelled(chat_id: int):
+    if chat_id in _cancelled:
+        raise asyncio.CancelledError("Cancelled by user.")
 
+
+# --- PROGRESS BAR ---
 async def progress_bar(current: int, total: int, status_msg, start_time: float, action: str):
     chat_id = status_msg.chat.id
 
-    if chat_id not in user_data:
-        raise asyncio.CancelledError("Process cancelled by user.")
+    if chat_id not in user_data or chat_id in _cancelled:
+        _cancelled.add(chat_id)
+        return
 
     now = time.time()
     msg_id = status_msg.id
@@ -127,11 +140,11 @@ async def cmd_handler(client, message):
     mode = message.command[0].lower()
     step = "video" if mode == "mux" else "sub"
     user_data[message.from_user.id] = {"mode": mode, "step": step}
-    labels = {"style": "🎨 Style", "convert": "🔄 Convert", "mux": "📦 Mux"}
+    labels  = {"style": "🎨 Style", "convert": "🔄 Convert", "mux": "📦 Mux"}
     prompts = {
-        "style": "Send your **.srt / .ass** subtitle file.",
+        "style":   "Send your **.srt / .ass** subtitle file.",
         "convert": "Send your **.srt / .ass** subtitle file.",
-        "mux": "Send the **video** file to mux.",
+        "mux":     "Send the **video** file to mux.",
     }
     await message.reply(f"**{labels[mode]} Mode Active.**\n\n{prompts[mode]}")
 
@@ -142,6 +155,7 @@ async def cb_handler(client, cb):
     chat_id = cb.from_user.id
 
     if cb.data == "stop_all":
+        _cancelled.add(chat_id)
         user_data.pop(chat_id, None)
         _last_edit.clear()
         await cb.message.edit("🛑 **Process Terminated.**")
@@ -207,7 +221,7 @@ async def main_handler(client, message):
             await message.reply(
                 "✅ **Subtitle received.**\n\n"
                 "Type the final output name (without extension):\n"
-                "`Shrouding The Heavens EP157 [4K]`"
+                "`SWALLOWED STAR EP218 [4K][TheFrictionRealm]`"
             )
 
         elif step == "name" and message.text:
@@ -231,13 +245,15 @@ async def start_sub_process(client, msg, chat_id: int, task: str):
     status = await msg.edit("⏳ **Downloading subtitle...**")
 
     try:
+        _check_cancelled(chat_id)
         data = user_data[chat_id]
-        s_msg = await client.get_messages(chat_id, data["sub_id"])
+        s_msg  = await client.get_messages(chat_id, data["sub_id"])
         s_path = await client.download_media(s_msg, file_name=f"{work_dir}/input.srt")
+        _check_cancelled(chat_id)
 
         base_name = re.sub(r"\.[^.]+$", "", data["orig_sub_name"])
-        ext = "ass" if task == "style" else data["ext"]
-        out_path = os.path.join(work_dir, f"{base_name}.{ext}")
+        ext       = "ass" if task == "style" else data["ext"]
+        out_path  = os.path.join(work_dir, f"{base_name}.{ext}")
 
         if task == "style":
             temp_ass = os.path.join(work_dir, "temp.ass")
@@ -268,18 +284,23 @@ async def start_sub_process(client, msg, chat_id: int, task: str):
             if result.returncode != 0:
                 raise RuntimeError(f"FFmpeg error:\n{result.stderr[-500:]}")
 
+        _check_cancelled(chat_id)
         await status.edit("📤 **Uploading result...**")
         await client.send_document(
             chat_id, out_path,
             caption=f"✅ **Done!**\n`{os.path.basename(out_path)}`"
         )
 
+    except asyncio.CancelledError:
+        pass
     except Exception as e:
         tb = traceback.format_exc()
         await msg.reply(f"❌ **Error:**\n`{e}`\n\n```\n{tb[-800:]}\n```")
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
         user_data.pop(chat_id, None)
+        _cancelled.discard(chat_id)
+        _last_edit.clear()
         try:
             await status.delete()
         except Exception:
@@ -293,21 +314,24 @@ async def finalize_mux(client, message, chat_id: int):
     status = await message.reply("🚀 **Starting mux pipeline...**")
 
     try:
+        _check_cancelled(chat_id)
         data = user_data[chat_id].copy()
 
         await status.edit("📥 **Downloading video...**", reply_markup=CANCEL_BTN)
-        v_msg = await client.get_messages(chat_id, data["vid_id"])
+        v_msg    = await client.get_messages(chat_id, data["vid_id"])
         dl_start = time.time()
-        v_path = await client.download_media(
+        v_path   = await client.download_media(
             v_msg,
             file_name=f"{work_dir}/video.mp4",
             progress=progress_bar,
             progress_args=(status, dl_start, "Download"),
         )
+        _check_cancelled(chat_id)
 
         await status.edit("📥 **Downloading subtitle...**")
-        s_msg = await client.get_messages(chat_id, data["sub_id"])
+        s_msg  = await client.get_messages(chat_id, data["sub_id"])
         s_path = await client.download_media(s_msg, file_name=f"{work_dir}/sub.ass")
+        _check_cancelled(chat_id)
 
         thumb_path = None
         if message.photo:
@@ -316,7 +340,7 @@ async def finalize_mux(client, message, chat_id: int):
             )
 
         out_path = os.path.join(work_dir, data["out_name"])
-        caption = generate_friction_caption(data["out_name"])
+        caption  = generate_friction_caption(data["out_name"])
 
         await status.edit(f"⚡ **Muxing:** `{data['out_name']}`")
         result = subprocess.run(
@@ -333,6 +357,8 @@ async def finalize_mux(client, message, chat_id: int):
         if result.returncode != 0:
             raise RuntimeError(f"FFmpeg mux failed:\n{result.stderr[-600:]}")
 
+        _check_cancelled(chat_id)
+
         await status.edit("📤 **Uploading...**", reply_markup=CANCEL_BTN)
         ul_start = time.time()
         await client.send_document(
@@ -343,15 +369,17 @@ async def finalize_mux(client, message, chat_id: int):
             progress=progress_bar,
             progress_args=(status, ul_start, "Upload"),
         )
+        _check_cancelled(chat_id)
 
     except asyncio.CancelledError:
-        await message.reply("🛑 **Mux cancelled.**")
+        pass
     except Exception as e:
         tb = traceback.format_exc()
         await message.reply(f"❌ **Error:**\n`{e}`\n\n```\n{tb[-800:]}\n```")
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
         user_data.pop(chat_id, None)
+        _cancelled.discard(chat_id)
         _last_edit.clear()
         try:
             await status.delete()
