@@ -227,19 +227,19 @@ async def finalize_mux(client, message, chat_id: int, data: dict):
     work_dir = f"work_mux_{chat_id}_{int(time.time())}"
     os.makedirs(work_dir, exist_ok=True)
 
-    # Clean bot-prompt messages
     if "msg_ids" in data:
         asyncio.create_task(client.delete_messages(chat_id, data["msg_ids"]))
 
     status = await client.send_message(chat_id, "🚀 **Initializing Mux Pipeline...**")
+
     try:
-        # ── Video: use cache if available ──────────────────────────
-        v_msg    = await client.get_messages(chat_id, data["vid_id"])
-        file_id  = (v_msg.video or v_msg.document).file_id
-        cached   = get_cached_video(file_id)
+        # ── Video ─────────────────────────────────────────────
+        v_msg   = await client.get_messages(chat_id, data["vid_id"])
+        file_id = (v_msg.video or v_msg.document).file_id
+        cached  = get_cached_video(file_id)
 
         if cached:
-            await status.edit("📂 **Using cached video (saved download time)...**")
+            await status.edit("📂 **Using cached video...**")
             v_path = cached
         else:
             await status.edit("📥 **Downloading video...**")
@@ -247,60 +247,74 @@ async def finalize_mux(client, message, chat_id: int, data: dict):
             v_path   = await fast_download(client, v_msg, raw_path, status, "Download")
             store_cached_video(file_id, v_path)
 
-        # ── Subtitle ───────────────────────────────────────────────
+        if not os.path.exists(v_path) or os.path.getsize(v_path) == 0:
+            raise Exception("Downloaded video is empty")
+
+        # ── Subtitle ──────────────────────────────────────────
         s_msg  = await client.get_messages(chat_id, data["sub_id"])
         s_path = await client.download_media(s_msg, file_name=f"{work_dir}/s.ass")
 
-        # ── Thumbnail ─────────────────────────────────────────────
+        if not os.path.exists(s_path) or os.path.getsize(s_path) == 0:
+            raise Exception("Subtitle file is empty")
+
+        # ── Thumbnail ─────────────────────────────────────────
         th = None
         if message.photo:
             th = await client.download_media(message.photo, file_name=f"{work_dir}/t.jpg")
 
-        # ── FFmpeg mux ─────────────────────────────────────────────
-# — FFmpeg mux
-out = os.path.join(work_dir, data["out_name"])
+        # ── FFmpeg mux ───────────────────────────────────────
+        out = os.path.join(work_dir, data["out_name"])
 
-result = subprocess.run(
-    [
-        "ffmpeg",
-        "-y",
-        "-i", v_path,
-        "-i", s_path,
-        "-map", "0:v",
-        "-map", "0:a?",
-        "-map", "1:s:0",
-        "-c:v", "copy",
-        "-c:a", "copy",
-        "-c:s", "ass",
-        "-metadata:s:s:0", "title=ENGLISH @TheFrictionRealm",
-        out,
-    ],
-    capture_output=True,
-    text=True,
-)
+        result = subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-i", v_path,
+                "-i", s_path,
+                "-map", "0:v",
+                "-map", "0:a?",
+                "-map", "1:s:0",
+                "-c:v", "copy",
+                "-c:a", "copy",
+                "-c:s", "ass",
+                "-metadata:s:s:0", "title=ENGLISH @TheFrictionRealm",
+                out,
+            ],
+            capture_output=True,
+            text=True,
+        )
 
-if result.returncode != 0:
-    raise Exception(f"FFmpeg failed:\n{result.stderr}")
+        print(result.stderr)
 
-if not os.path.exists(out) or os.path.getsize(out) == 0:
-    raise Exception("Mux failed: Output file is empty")
+        if result.returncode != 0:
+            raise Exception(f"FFmpeg failed:\n{result.stderr}")
 
-        # ── Decide: upload or leech ────────────────────────────────
+        if not os.path.exists(out) or os.path.getsize(out) == 0:
+            raise Exception("Mux failed: Output file is empty")
+
+        # ── Upload / Leech ───────────────────────────────────
         out_size = os.path.getsize(out)
+
         if out_size > SIZE_2GB:
             await status.edit("📦 **File > 2 GB — moving to leech server...**")
+
             _, url = move_to_leech(out)
+
             caption = generate_friction_caption(data["out_name"])
             leech_text = (
                 f"{caption}\n\n"
                 f"📁 **Size:** `{out_size/1073741824:.2f} GB`\n"
                 f"🔗 **Leech Link (2h):**\n`{url}`"
             )
+
             await client.send_message(chat_id, leech_text)
+
         else:
             await status.edit("📤 **Uploading to Telegram...**")
+
             await client.send_document(
-                chat_id, out,
+                chat_id,
+                out,
                 thumb=th,
                 caption=generate_friction_caption(data["out_name"]),
                 progress=progress_bar,
@@ -311,7 +325,11 @@ if not os.path.exists(out) or os.path.getsize(out) == 0:
         if "STOP_PROCESS" in str(e):
             await status.edit("🛑 **Process Cancelled.**")
         else:
-            await client.send_message(chat_id, f"❌ **Error:**\n`{traceback.format_exc()}`")
+            await client.send_message(
+                chat_id,
+                f"❌ **Error:**\n`{traceback.format_exc()}`"
+            )
+
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
         _cancelled.discard(chat_id)
@@ -319,7 +337,6 @@ if not os.path.exists(out) or os.path.getsize(out) == 0:
             await status.delete()
         except Exception:
             pass
-
 
 async def start_sub_process(client, msg, chat_id: int, task: str, data: dict):
     work_dir = f"work_sub_{chat_id}_{int(time.time())}"
