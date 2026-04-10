@@ -8,7 +8,11 @@ RUN useradd -m -u 1000 user
 USER user
 ENV HOME=/home/user \
     PATH=/home/user/.local/bin:$PATH
+
 WORKDIR $HOME/app
+
+# Persistent dirs for cache and leech (created at runtime by the app too)
+RUN mkdir -p $HOME/app/cache $HOME/app/leech
 
 # Install dependencies
 COPY --chown=user requirements.txt .
@@ -17,12 +21,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the rest of your code
 COPY --chown=user . .
 
-# Start the bot
-CMD ["python", "main.py"]
+# Expose port 7860 (Hugging Face Spaces default)
+EXPOSE 7860
 
-FROM python:3.10-slim
-RUN apt-get update && apt-get install -y ffmpeg libass-dev && apt-get clean
-WORKDIR /app
-COPY . .
-RUN pip install --no-cache-dir -r requirements.txt
+# Start the bot
 CMD ["python", "main.py"]
