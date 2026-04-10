@@ -257,16 +257,31 @@ async def finalize_mux(client, message, chat_id: int, data: dict):
             th = await client.download_media(message.photo, file_name=f"{work_dir}/t.jpg")
 
         # ── FFmpeg mux ─────────────────────────────────────────────
-        out = os.path.join(work_dir, data["out_name"])
-        await status.edit("⚡ **Muxing...**")
-        subprocess.run(
-            ["ffmpeg", "-i", v_path, "-i", s_path,
-             "-map", "0:v:0", "-map", "0:a:0", "-map", "1:s:0",
-             "-c:v", "copy", "-c:a", "copy", "-c:s", "ass",
-             "-metadata:s:s:0", "title=ENGLISH @TheFrictionRealm",
-             out, "-y"],
-            check=True,
-        )
+        result = subprocess.run(
+    [
+        "ffmpeg",
+        "-i", v_path,
+        "-i", s_path,
+        "-map", "0:v",
+        "-map", "0:a?",   # ✅ FIXED
+        "-map", "1:s:0",
+        "-c:v", "copy",
+        "-c:a", "copy",
+        "-c:s", "ass",
+        "-metadata:s:s:0", "title=ENGLISH @TheFrictionRealm",
+        out,
+        "-y"
+    ],
+    capture_output=True,
+    text=True
+)
+
+print(result.stderr)
+
+if result.returncode != 0:
+    raise Exception(f"FFmpeg failed:\n{result.stderr}")
+if not os.path.exists(out) or os.path.getsize(out) == 0:
+    raise Exception("Mux failed: Output file is empty")
 
         # ── Decide: upload or leech ────────────────────────────────
         out_size = os.path.getsize(out)
