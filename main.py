@@ -257,9 +257,7 @@ async def finalize_mux(client, message, chat_id: int, data: dict):
             th = await client.download_media(message.photo, file_name=f"{work_dir}/t.jpg")
 
         # ── FFmpeg mux ─────────────────────────────────────────────
-        result = subprocess.run(
-    [# — FFmpeg mux
-out = os.path.join(work_dir, data["out_name"])
+result = subprocess.run([out = os.path.join(work_dir, data["out_name"])
 
 result = subprocess.run(
     [
