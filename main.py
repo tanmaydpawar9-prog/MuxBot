@@ -271,7 +271,7 @@ async def finalize_mux(client, message, chat_id: int, data: dict):
                 "-y",
                 "-i", v_path,
                 "-i", s_path,
-                "-map", "0:v",
+                "-map", "0:v:0",
                 "-map", "0:a?",
                 "-map", "1:s:0",
                 "-c:v", "copy",
