@@ -258,28 +258,31 @@ async def finalize_mux(client, message, chat_id: int, data: dict):
 
         # ── FFmpeg mux ─────────────────────────────────────────────
         result = subprocess.run(
+    [# — FFmpeg mux
+out = os.path.join(work_dir, data["out_name"])
+
+result = subprocess.run(
     [
         "ffmpeg",
+        "-y",
         "-i", v_path,
         "-i", s_path,
         "-map", "0:v",
-        "-map", "0:a?",   # ✅ FIXED
+        "-map", "0:a?",
         "-map", "1:s:0",
         "-c:v", "copy",
         "-c:a", "copy",
         "-c:s", "ass",
         "-metadata:s:s:0", "title=ENGLISH @TheFrictionRealm",
         out,
-        "-y"
     ],
     capture_output=True,
-    text=True
+    text=True,
 )
-
-print(result.stderr)
 
 if result.returncode != 0:
     raise Exception(f"FFmpeg failed:\n{result.stderr}")
+
 if not os.path.exists(out) or os.path.getsize(out) == 0:
     raise Exception("Mux failed: Output file is empty")
 
