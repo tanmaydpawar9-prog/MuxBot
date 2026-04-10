@@ -180,8 +180,11 @@ class _LeechHandler(http.server.SimpleHTTPRequestHandler):
         # strip query string
         path = path.split("?", 1)[0].split("#", 1)[0]
         # leech/<filename>  →  LEECH_DIR/<filename>
+        from urllib.parse import unquote
+
         if path.startswith("/leech/"):
-            return os.path.join(LEECH_DIR, os.path.basename(path))
+            filename = os.path.basename(unquote(path))
+            return os.path.join(LEECH_DIR, filename)
         # cache/<filename>  →  CACHE_DIR/<filename>
         if path.startswith("/cache/"):
             return os.path.join(CACHE_DIR, os.path.basename(path))
@@ -196,9 +199,11 @@ def start_server():
         httpd.serve_forever()
 
 
+from urllib.parse import quote
+
 def leech_url(filename: str) -> str:
     base = PUBLIC_URL if PUBLIC_URL else "http://localhost:7860"
-    return f"{base}/leech/{filename}"
+    return f"{base}/leech/{quote(filename)}"
 
 
 def move_to_leech(src_path: str) -> tuple[str, str]:
