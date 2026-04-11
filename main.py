@@ -2,6 +2,7 @@ import asyncio
 import os
 import shutil
 import threading
+import logging
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 from pyrogram import Client, filters
@@ -18,6 +19,8 @@ from core.uploader import upload_video
 from utils.caption import extract_caption
 from utils.ffmpeg import mux_video, inject_style, convert_subtitle
 
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logger = logging.getLogger(__name__)
 
 # ──────────────────────────────────────────────
 # HF Keep-alive HTTP server on port 7860
@@ -193,9 +196,11 @@ async def cb_style_mode(client, cq: CallbackQuery):
     out_path = sub_path.rsplit(".", 1)[0] + f"_{mode}.ass"
     cancel = workflow.get_cancel_flag(uid)
 
+    logger.info(f"User {uid} applying style {mode} to {sub_path}")
     try:
         await inject_style(sub_path, out_path, mode)
     except Exception as e:
+        logger.error(f"Style failed: {e}")
         await cq.message.edit_text(f"❌ Failed:\n<code>{e}</code>", parse_mode="html")
         _cleanup(sub_path)
         workflow.clear_state(uid)
@@ -243,9 +248,11 @@ async def cb_convert_dir(client, cq: CallbackQuery):
     out_path = sub_path.rsplit(".", 1)[0] + "_converted" + out_ext
     await cq.message.edit_text("⚙️ Converting…")
 
+    logger.info(f"User {uid} converting {sub_path} direction {direction}")
     try:
         await convert_subtitle(sub_path, out_path)
     except Exception as e:
+        logger.error(f"Conversion failed: {e}")
         await cq.message.edit_text(f"❌ Failed:\n<code>{e}</code>", parse_mode="html")
         _cleanup(sub_path)
         workflow.clear_state(uid)
@@ -398,9 +405,11 @@ async def on_text(client, message: Message):
         cancel = workflow.get_cancel_flag(uid)
 
         status = await message.reply("⚙️ Muxing…", reply_markup=CANCEL_KB)
+        logger.info(f"User {uid} started muxing {video_path} + {sub_path} -> {out_path}")
         try:
             await mux_video(video_path, sub_path, out_path, thumb_path)
         except Exception as e:
+            logger.error(f"Mux failed: {e}")
             await status.edit_text(f"❌ Mux failed:\n<code>{e}</code>", parse_mode="html")
             _cleanup(video_path, sub_path, thumb_path, out_path)
             workflow.clear_state(uid)
@@ -452,5 +461,5 @@ def _cleanup(*paths):
 # ──────────────────────────────────────────────
 if __name__ == "__main__":
     _start_keepalive()
-    print("🚀 MuxBot starting…")
+    logger.info("🚀 MuxBot starting…")
     app.run()
