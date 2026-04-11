@@ -14,7 +14,7 @@ from utils.download import aria2_download, download_telegram_media
 from utils.ffmpeg import mux_subtitles
 from utils.caption import generate_caption
 from utils.upload import send_document
-from utils.cancel import register, pop
+from utils.cancel import register, pop, cancel
 from utils.cleanup import cleanup_job, ensure_dirs
 from utils.cache import put
 
@@ -83,8 +83,17 @@ async def register_mux_handlers(client, state_store: dict[int, JobState]):
             # 1) waiting for video
             if st.stage == "waiting_video" and event.video:
                 msg = await event.reply("📥 Downloading video...")
-                st.video_path = await download_telegram_media(event.message, WORK_DIR)
+
+                try:
+                    st.video_path = await download_telegram_media(
+                        event.message, WORK_DIR
+                    )
+                except Exception as e:
+                    await msg.edit(f"❌ Video download failed:\n{str(e)}")
+                    return
+
                 st.stage = "waiting_subtitle_choice"
+
                 await msg.edit("✅ Video downloaded.")
                 await _ask_sub_options(event)
                 return
@@ -93,8 +102,17 @@ async def register_mux_handlers(client, state_store: dict[int, JobState]):
             if st.stage == "waiting_subtitle_choice":
                 if event.file:
                     msg = await event.reply("📥 Downloading subtitle...")
-                    st.subtitle_path = await download_telegram_media(event.message, WORK_DIR)
+
+                    try:
+                        st.subtitle_path = await download_telegram_media(
+                            event.message, WORK_DIR
+                        )
+                    except Exception as e:
+                        await msg.edit(f"❌ Subtitle download failed:\n{str(e)}")
+                        return
+
                     st.stage = "waiting_output_name"
+
                     await msg.edit("✅ Subtitle ready.")
                     await event.reply("Send output name (without extension).")
                     return
@@ -102,9 +120,16 @@ async def register_mux_handlers(client, state_store: dict[int, JobState]):
                 if text.startswith("http://") or text.startswith("https://"):
                     st.subtitle_url = text
                     msg = await event.reply("⬇️ Downloading subtitle...")
-                    sub_name = f"{uuid.uuid4().hex}.ass"
-                    st.subtitle_path = await aria2_download(text, sub_name)
+
+                    try:
+                        sub_name = f"{uuid.uuid4().hex}.ass"
+                        st.subtitle_path = await aria2_download(text, sub_name)
+                    except Exception as e:
+                        await msg.edit(f"❌ Subtitle URL download failed:\n{str(e)}")
+                        return
+
                     st.stage = "waiting_output_name"
+
                     await msg.edit("✅ Subtitle downloaded.")
                     await event.reply("Send output name (without extension).")
                     return
@@ -125,7 +150,15 @@ async def register_mux_handlers(client, state_store: dict[int, JobState]):
                     st.stage = "processing"
                 elif _is_image_message(event):
                     msg = await event.reply("📥 Downloading thumbnail...")
-                    st.thumb_path = await download_telegram_media(event.message, WORK_DIR)
+
+                    try:
+                        st.thumb_path = await download_telegram_media(
+                            event.message, WORK_DIR
+                        )
+                    except Exception as e:
+                        await msg.edit(f"❌ Thumbnail download failed:\n{str(e)}")
+                        return
+
                     await msg.edit("✅ Thumbnail ready.")
                     st.stage = "processing"
                 else:
@@ -160,7 +193,10 @@ async def register_mux_handlers(client, state_store: dict[int, JobState]):
                             )
                         else:
                             Path(LEECH_DIR).mkdir(parents=True, exist_ok=True)
-                            leech_path = os.path.join(LEECH_DIR, os.path.basename(muxed))
+
+                            leech_path = os.path.join(
+                                LEECH_DIR, os.path.basename(muxed)
+                            )
 
                             if os.path.exists(leech_path):
                                 os.remove(leech_path)
@@ -192,13 +228,16 @@ async def register_mux_handlers(client, state_store: dict[int, JobState]):
         except Exception as e:
             await event.reply(f"❌ Unexpected Error:\n{str(e)}")
 
-    # button handlers
     @client.on(events.CallbackQuery(data=b"sub_later"))
     async def _(event):
+        if not is_authorized(event.sender_id):
+            return
         await event.answer("Send subtitle when ready.")
 
     @client.on(events.CallbackQuery(data=b"sub_online"))
     async def _(event):
+        if not is_authorized(event.sender_id):
+            return
         await event.answer("Send subtitle URL.")
 
     @client.on(events.CallbackQuery(data=b"sub_skip"))
@@ -211,3 +250,17 @@ async def register_mux_handlers(client, state_store: dict[int, JobState]):
             st.stage = "waiting_output_name"
 
         await event.answer("Subtitle skipped.")
+
+    @client.on(events.CallbackQuery(data=b"cancel"))
+    async def _(event):
+        if not is_authorized(event.sender_id):
+            return
+
+        uid = event.sender_id
+        cancel(uid)
+        st = state_store.get(uid)
+        if st:
+            st.stage = "idle"
+
+        await event.answer("Cancelled")
+        await event.edit("✖️ Cancelled.")
