@@ -99,6 +99,7 @@ async def download_media(
                         try:
                             limit = end_chunk - current_chunk + 1
                             with open(output_path, "r+b") as f:
+                                yielded_any = False
                                 async for chunk in client.stream_media(message, limit=limit, offset=current_chunk):
                                     if cancel_flag and cancel_flag.is_set() or error_event.is_set():
                                         break
@@ -106,8 +107,13 @@ async def download_media(
                                     f.write(chunk)
                                     downloaded[0] += len(chunk)
                                     current_chunk += 1
+                                    yielded_any = True
                                     await progress(downloaded[0], file_size)
-                            retries = 0  # reset on success
+                            if yielded_any:
+                                retries = 0  # reset on success
+                            else:
+                                retries += 1
+                                await asyncio.sleep(1)
                         except FloodWait as e:
                             await asyncio.sleep(e.value + 1)
                         except Exception:

@@ -46,19 +46,19 @@ async def mux_video(video_path: str, sub_path: str, out_path: str, thumb_path: s
     """Mux video + ASS subtitle (no re-encode), optional thumbnail."""
     inputs = ["-i", video_path, "-i", sub_path]
     maps = [
-        "-map", "0:v", "-map", "0:a?",
-        "-map", "1:s",
+        "-map", "0:v:0", "-map", "0:a?",
+        "-map", "1:s:0",
     ]
     meta = [
         "-metadata:s:s:0", "language=eng",
-        "-metadata:s:s:0", "title=Default",
+        "-metadata:s:s:0", "title=ENGLISH @TheFrictionRealm",
         "-disposition:s:0", "default",
     ]
     codec = ["-c", "copy", "-c:s", "ass"]
 
     if thumb_path:
         inputs += ["-i", thumb_path]
-        maps += ["-map", "2:v"]
+        maps += ["-map", "2:v:0"]
         codec += [
             "-c:v:1", "copy",
             "-disposition:v:1", "attached_pic",
