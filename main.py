@@ -1,0 +1,456 @@
+import asyncio
+import os
+import shutil
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
+
+from pyrogram import Client, filters
+from pyrogram.types import (
+    InlineKeyboardMarkup, InlineKeyboardButton,
+    Message, CallbackQuery,
+)
+
+import config
+from config import is_allowed
+from core import workflow
+from core.downloader import download_media
+from core.uploader import upload_video
+from utils.caption import extract_caption
+from utils.ffmpeg import mux_video, inject_style, convert_subtitle
+
+
+# ──────────────────────────────────────────────
+# HF Keep-alive HTTP server on port 7860
+# ──────────────────────────────────────────────
+class _KA(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"OK")
+    def log_message(self, *_): pass
+
+def _start_keepalive():
+    server = HTTPServer(("0.0.0.0", 7860), _KA)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+
+# ──────────────────────────────────────────────
+# Pyrogram client
+# ──────────────────────────────────────────────
+app = Client(
+    "muxbot",
+    api_id=config.API_ID,
+    api_hash=config.API_HASH,
+    bot_token=config.BOT_TOKEN,
+)
+
+# ──────────────────────────────────────────────
+# Access guard
+# ──────────────────────────────────────────────
+def auth_only(func):
+    async def wrapper(client, update, *args, **kwargs):
+        uid = update.from_user.id if hasattr(update, "from_user") else 0
+        if not is_allowed(uid):
+            if isinstance(update, Message):
+                await update.reply("⛔ Access denied.")
+            return
+        return await func(client, update, *args, **kwargs)
+    wrapper.__name__ = func.__name__
+    return wrapper
+
+# ──────────────────────────────────────────────
+# Cancel inline keyboard
+# ──────────────────────────────────────────────
+CANCEL_KB = InlineKeyboardMarkup([[
+    InlineKeyboardButton("✖️ CANCEL ✖️", callback_data="cancel")
+]])
+
+# ──────────────────────────────────────────────
+# /start  /help
+# ──────────────────────────────────────────────
+@app.on_message(filters.command(["start", "help"]))
+@auth_only
+async def cmd_start(client, message: Message):
+    await message.reply(
+        "<b>🎬 MuxBot</b>\n\n"
+        "<b>/mux</b> — Mux video + ASS subtitle\n"
+        "<b>/style</b> — Style SRT/ASS subtitle\n"
+        "<b>/convert</b> — Convert SRT ↔ ASS\n\n"
+        "Send /cancel at any time to abort.",
+        parse_mode="html",
+    )
+
+# ──────────────────────────────────────────────
+# /cancel command
+# ──────────────────────────────────────────────
+@app.on_message(filters.command("cancel"))
+@auth_only
+async def cmd_cancel(client, message: Message):
+    uid = message.from_user.id
+    workflow.cancel_user(uid)
+    workflow.clear_state(uid)
+    await message.reply("❌ Operation cancelled.")
+
+# ──────────────────────────────────────────────
+# Cancel callback
+# ──────────────────────────────────────────────
+@app.on_callback_query(filters.regex("^cancel$"))
+@auth_only
+async def cb_cancel(client, cq: CallbackQuery):
+    uid = cq.from_user.id
+    workflow.cancel_user(uid)
+    workflow.clear_state(uid)
+    await cq.message.edit_text("❌ Operation cancelled.")
+
+# ──────────────────────────────────────────────
+# ╔══════════════════════════════╗
+# ║        /mux  FLOW           ║
+# ╚══════════════════════════════╝
+# ──────────────────────────────────────────────
+@app.on_message(filters.command("mux"))
+@auth_only
+async def cmd_mux(client, message: Message):
+    uid = message.from_user.id
+    workflow.reset_cancel_flag(uid)
+    workflow.clear_state(uid)
+    workflow.set_state(uid, flow="mux", step="await_video")
+    await message.reply(
+        "📹 <b>Step 1/4 — Send your video file.</b>",
+        parse_mode="html",
+        reply_markup=CANCEL_KB,
+    )
+
+# ──────────────────────────────────────────────
+# ╔══════════════════════════════╗
+# ║       /style  FLOW          ║
+# ╚══════════════════════════════╝
+# ──────────────────────────────────────────────
+@app.on_message(filters.command("style"))
+@auth_only
+async def cmd_style(client, message: Message):
+    uid = message.from_user.id
+    workflow.reset_cancel_flag(uid)
+    workflow.clear_state(uid)
+    workflow.set_state(uid, flow="style", step="await_sub")
+    await message.reply(
+        "📄 <b>Step 1/2 — Send your .srt or .ass subtitle file.</b>",
+        parse_mode="html",
+        reply_markup=CANCEL_KB,
+    )
+
+# ──────────────────────────────────────────────
+# ╔══════════════════════════════╗
+# ║      /convert  FLOW         ║
+# ╚══════════════════════════════╝
+# ──────────────────────────────────────────────
+@app.on_message(filters.command("convert"))
+@auth_only
+async def cmd_convert(client, message: Message):
+    uid = message.from_user.id
+    workflow.reset_cancel_flag(uid)
+    workflow.clear_state(uid)
+    workflow.set_state(uid, flow="convert", step="await_sub")
+    await message.reply(
+        "📄 <b>Send your .srt or .ass file to convert.</b>",
+        parse_mode="html",
+        reply_markup=CANCEL_KB,
+    )
+
+# ──────────────────────────────────────────────
+# /skip  (thumbnail skip in mux flow)
+# ──────────────────────────────────────────────
+@app.on_message(filters.command("skip"))
+@auth_only
+async def cmd_skip(client, message: Message):
+    uid = message.from_user.id
+    state = workflow.get_state(uid)
+    if state.get("flow") == "mux" and state.get("step") == "await_thumb":
+        workflow.set_state(uid, thumb=None, step="await_filename")
+        await message.reply(
+            "✏️ <b>Step 4/4 — Send the output filename</b> (without extension):",
+            parse_mode="html",
+            reply_markup=CANCEL_KB,
+        )
+    else:
+        await message.reply("Nothing to skip right now.")
+
+# ──────────────────────────────────────────────
+# Style mode keyboard callback
+# ──────────────────────────────────────────────
+@app.on_callback_query(filters.regex("^style_(cinematic|full4k)$"))
+@auth_only
+async def cb_style_mode(client, cq: CallbackQuery):
+    uid = cq.from_user.id
+    state = workflow.get_state(uid)
+    if state.get("flow") != "style" or state.get("step") != "await_mode":
+        await cq.answer("Not in style flow.", show_alert=True)
+        return
+
+    mode = cq.data.split("_", 1)[1]  # 'cinematic' or 'full4k'
+    workflow.set_state(uid, mode=mode, step="processing")
+    await cq.message.edit_text(f"⚙️ Applying <b>{'Cinematic 816p' if mode == 'cinematic' else 'Full 4K 1080p'}</b> style…", parse_mode="html")
+
+    sub_path = state["sub"]
+    out_path = sub_path.rsplit(".", 1)[0] + f"_{mode}.ass"
+    cancel = workflow.get_cancel_flag(uid)
+
+    try:
+        await inject_style(sub_path, out_path, mode)
+    except Exception as e:
+        await cq.message.edit_text(f"❌ Failed:\n<code>{e}</code>", parse_mode="html")
+        _cleanup(sub_path)
+        workflow.clear_state(uid)
+        return
+
+    if cancel.is_set():
+        _cleanup(sub_path, out_path)
+        workflow.clear_state(uid)
+        return
+
+    await client.send_document(
+        cq.message.chat.id,
+        out_path,
+        caption=f"✅ Styled subtitle ({mode})",
+        reply_to_message_id=state.get("origin_msg_id"),
+    )
+    _cleanup(sub_path, out_path)
+    workflow.clear_state(uid)
+
+# ──────────────────────────────────────────────
+# Convert direction callback
+# ──────────────────────────────────────────────
+@app.on_callback_query(filters.regex("^conv_(srt2ass|ass2srt)$"))
+@auth_only
+async def cb_convert_dir(client, cq: CallbackQuery):
+    uid = cq.from_user.id
+    state = workflow.get_state(uid)
+    if state.get("flow") != "convert" or state.get("step") != "await_dir":
+        await cq.answer("Not in convert flow.", show_alert=True)
+        return
+
+    direction = cq.data.split("_", 1)[1]
+    sub_path = state["sub"]
+    ext_in = os.path.splitext(sub_path)[1].lower()
+
+    # Validate direction matches file
+    if direction == "srt2ass" and ext_in != ".srt":
+        await cq.answer("File is not .srt", show_alert=True)
+        return
+    if direction == "ass2srt" and ext_in != ".ass":
+        await cq.answer("File is not .ass", show_alert=True)
+        return
+
+    out_ext = ".ass" if direction == "srt2ass" else ".srt"
+    out_path = sub_path.rsplit(".", 1)[0] + "_converted" + out_ext
+    await cq.message.edit_text("⚙️ Converting…")
+
+    try:
+        await convert_subtitle(sub_path, out_path)
+    except Exception as e:
+        await cq.message.edit_text(f"❌ Failed:\n<code>{e}</code>", parse_mode="html")
+        _cleanup(sub_path)
+        workflow.clear_state(uid)
+        return
+
+    await client.send_document(
+        cq.message.chat.id,
+        out_path,
+        caption=f"✅ Converted: {os.path.basename(out_path)}",
+        reply_to_message_id=state.get("origin_msg_id"),
+    )
+    _cleanup(sub_path, out_path)
+    workflow.clear_state(uid)
+
+# ──────────────────────────────────────────────
+# Universal document/video/photo handler
+# ──────────────────────────────────────────────
+@app.on_message(filters.private & (filters.document | filters.video | filters.photo))
+@auth_only
+async def on_file(client, message: Message):
+    uid = message.from_user.id
+    state = workflow.get_state(uid)
+    flow = state.get("flow")
+    step = state.get("step")
+
+    if not flow or not step:
+        return
+
+    cancel = workflow.get_cancel_flag(uid)
+    if cancel.is_set():
+        return
+
+    # ── MUX FLOW ──────────────────────────────
+    if flow == "mux":
+
+        if step == "await_video":
+            if not (message.video or (message.document and message.document.mime_type and "video" in message.document.mime_type)):
+                await message.reply("⚠️ Please send a video file.")
+                return
+            status = await message.reply("⬇️ Downloading video…", reply_markup=CANCEL_KB)
+            path = await download_media(client, message, status, cancel, "Download")
+            if not path:
+                workflow.clear_state(uid); return
+            workflow.set_state(uid, video=path, step="await_sub")
+            await status.edit_text(
+                "📄 <b>Step 2/4 — Send your .ass subtitle file.</b>",
+                parse_mode="html",
+                reply_markup=CANCEL_KB,
+            )
+
+        elif step == "await_sub":
+            fname = _doc_name(message)
+            if not fname.endswith(".ass"):
+                await message.reply("⚠️ Please send an .ass subtitle file.")
+                return
+            status = await message.reply("⬇️ Downloading subtitle…", reply_markup=CANCEL_KB)
+            path = await download_media(client, message, status, cancel, "Download")
+            if not path:
+                workflow.clear_state(uid); return
+            workflow.set_state(uid, sub=path, step="await_thumb")
+            await status.edit_text(
+                "🖼 <b>Step 3/4 — Send a thumbnail image or /skip.</b>",
+                parse_mode="html",
+                reply_markup=CANCEL_KB,
+            )
+
+        elif step == "await_thumb":
+            status = await message.reply("⬇️ Downloading thumbnail…", reply_markup=CANCEL_KB)
+            path = await download_media(client, message, status, cancel, "Download")
+            if not path:
+                workflow.clear_state(uid); return
+            workflow.set_state(uid, thumb=path, step="await_filename")
+            await status.edit_text(
+                "✏️ <b>Step 4/4 — Send the output filename</b> (without extension):",
+                parse_mode="html",
+                reply_markup=CANCEL_KB,
+            )
+
+    # ── STYLE FLOW ────────────────────────────
+    elif flow == "style":
+        if step == "await_sub":
+            fname = _doc_name(message)
+            if not (fname.endswith(".srt") or fname.endswith(".ass")):
+                await message.reply("⚠️ Please send a .srt or .ass file.")
+                return
+            status = await message.reply("⬇️ Downloading subtitle…", reply_markup=CANCEL_KB)
+            path = await download_media(client, message, status, cancel, "Download")
+            if not path:
+                workflow.clear_state(uid); return
+            workflow.set_state(uid, sub=path, step="await_mode", origin_msg_id=message.id)
+            await status.edit_text(
+                "🎨 <b>Step 2/2 — Choose style mode:</b>",
+                parse_mode="html",
+                reply_markup=InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton("🎞 Cinematic (816p)", callback_data="style_cinematic"),
+                        InlineKeyboardButton("📺 Full 4K (1080p)", callback_data="style_full4k"),
+                    ],
+                    [InlineKeyboardButton("✖️ CANCEL ✖️", callback_data="cancel")],
+                ]),
+            )
+
+    # ── CONVERT FLOW ──────────────────────────
+    elif flow == "convert":
+        if step == "await_sub":
+            fname = _doc_name(message)
+            if not (fname.endswith(".srt") or fname.endswith(".ass")):
+                await message.reply("⚠️ Please send a .srt or .ass file.")
+                return
+            status = await message.reply("⬇️ Downloading subtitle…", reply_markup=CANCEL_KB)
+            path = await download_media(client, message, status, cancel, "Download")
+            if not path:
+                workflow.clear_state(uid); return
+
+            ext = os.path.splitext(fname)[1].lower()
+            # Auto-detect direction
+            workflow.set_state(uid, sub=path, step="await_dir", origin_msg_id=message.id)
+            buttons = []
+            if ext == ".srt":
+                buttons.append(InlineKeyboardButton("SRT → ASS", callback_data="conv_srt2ass"))
+            else:
+                buttons.append(InlineKeyboardButton("ASS → SRT", callback_data="conv_ass2srt"))
+            buttons.append(InlineKeyboardButton("✖️ CANCEL ✖️", callback_data="cancel"))
+
+            await status.edit_text(
+                "🔄 <b>Choose conversion direction:</b>",
+                parse_mode="html",
+                reply_markup=InlineKeyboardMarkup([buttons]),
+            )
+
+
+# ──────────────────────────────────────────────
+# Text handler (filename step in mux flow)
+# ──────────────────────────────────────────────
+@app.on_message(filters.private & filters.text & ~filters.command(["start","help","mux","style","convert","cancel","skip"]))
+@auth_only
+async def on_text(client, message: Message):
+    uid = message.from_user.id
+    state = workflow.get_state(uid)
+    if state.get("flow") == "mux" and state.get("step") == "await_filename":
+        out_name = message.text.strip()
+        if not out_name:
+            await message.reply("⚠️ Please send a valid filename.")
+            return
+
+        video_path = state["video"]
+        sub_path = state["sub"]
+        thumb_path = state.get("thumb")
+        out_path = f"downloads/{out_name}.mkv"
+        cancel = workflow.get_cancel_flag(uid)
+
+        status = await message.reply("⚙️ Muxing…", reply_markup=CANCEL_KB)
+        try:
+            await mux_video(video_path, sub_path, out_path, thumb_path)
+        except Exception as e:
+            await status.edit_text(f"❌ Mux failed:\n<code>{e}</code>", parse_mode="html")
+            _cleanup(video_path, sub_path, thumb_path, out_path)
+            workflow.clear_state(uid)
+            return
+
+        if cancel.is_set():
+            _cleanup(video_path, sub_path, thumb_path, out_path)
+            workflow.clear_state(uid)
+            return
+
+        caption = extract_caption(out_name + ".mkv")
+        await status.edit_text("📤 Uploading…", reply_markup=CANCEL_KB)
+        await upload_video(
+            client,
+            message.chat.id,
+            out_path,
+            caption=caption,
+            thumb=thumb_path,
+            status_msg=status,
+            cancel_flag=cancel,
+        )
+
+        _cleanup(video_path, sub_path, thumb_path, out_path)
+        workflow.clear_state(uid)
+        if not cancel.is_set():
+            await status.edit_text("✅ Done!")
+
+
+# ──────────────────────────────────────────────
+# Helpers
+# ──────────────────────────────────────────────
+def _doc_name(message: Message) -> str:
+    if message.document:
+        return message.document.file_name or ""
+    return ""
+
+
+def _cleanup(*paths):
+    for p in paths:
+        if p and os.path.exists(p):
+            try:
+                os.remove(p)
+            except Exception:
+                pass
+
+
+# ──────────────────────────────────────────────
+# Entry point
+# ──────────────────────────────────────────────
+if __name__ == "__main__":
+    _start_keepalive()
+    print("🚀 MuxBot starting…")
+    app.run()
