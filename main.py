@@ -6,6 +6,12 @@ import logging
 import secrets
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
+try:
+    import uvloop
+    uvloop.install()
+except ImportError:
+    pass
+
 from pyrogram import Client, filters
 from pyrogram.enums import ParseMode
 from pyrogram.types import (
@@ -62,6 +68,7 @@ app = Client(
     api_id=config.API_ID,
     api_hash=config.API_HASH,
     bot_token=config.BOT_TOKEN,
+    max_concurrent_transmissions=5,
 )
 
 # ──────────────────────────────────────────────
