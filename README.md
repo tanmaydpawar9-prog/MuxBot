@@ -4,6 +4,7 @@ emoji: 🤖
 colorFrom: purple
 colorTo: blue
 sdk: docker
+app_file: bot.py
 pinned: false
 ---
 
