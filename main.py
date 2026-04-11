@@ -3,6 +3,7 @@ import os
 import shutil
 import threading
 import logging
+import secrets
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 from pyrogram import Client, filters
@@ -22,6 +23,22 @@ from utils.ffmpeg import mux_video, inject_style, convert_subtitle
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
+
+# ──────────────────────────────────────────────
+# Video Token Temp Storage
+# ──────────────────────────────────────────────
+SAVED_VIDEOS: dict[str, str] = {}
+
+async def delayed_delete(path: str, delay: int = 7200):
+    await asyncio.sleep(delay)
+    if os.path.exists(path):
+        try:
+            os.remove(path)
+        except Exception:
+            pass
+    for k, v in list(SAVED_VIDEOS.items()):
+        if v == path:
+            del SAVED_VIDEOS[k]
 
 # ──────────────────────────────────────────────
 # HF Keep-alive HTTP server on port 7860
@@ -91,6 +108,12 @@ async def cmd_start(client, message: Message):
 async def cmd_cancel(client, message: Message):
     uid = message.from_user.id
     workflow.cancel_user(uid)
+    
+    state = workflow.get_state(uid)
+    v, s, t = state.get("video"), state.get("sub"), state.get("thumb")
+    if v and v not in SAVED_VIDEOS.values(): _cleanup(v)
+    _cleanup(s, t)
+    
     workflow.clear_state(uid)
     await message.reply("❌ Operation cancelled.")
 
@@ -102,6 +125,12 @@ async def cmd_cancel(client, message: Message):
 async def cb_cancel(client, cq: CallbackQuery):
     uid = cq.from_user.id
     workflow.cancel_user(uid)
+    
+    state = workflow.get_state(uid)
+    v, s, t = state.get("video"), state.get("sub"), state.get("thumb")
+    if v and v not in SAVED_VIDEOS.values(): _cleanup(v)
+    _cleanup(s, t)
+    
     workflow.clear_state(uid)
     await cq.message.edit_text("❌ Operation cancelled.")
 
@@ -119,6 +148,34 @@ async def cmd_mux(client, message: Message):
     workflow.set_state(uid, flow="mux", step="await_video")
     await message.reply(
         "📹 <b>Step 1/4 — Send your video file.</b>",
+        parse_mode=ParseMode.HTML,
+        reply_markup=CANCEL_KB,
+    )
+
+# ──────────────────────────────────────────────
+# ╔══════════════════════════════╗
+# ║       /reuse  FLOW           ║
+# ╚══════════════════════════════╝
+# ──────────────────────────────────────────────
+@app.on_message(filters.command(["reuse", "reuser"]))
+@auth_only
+async def cmd_reuse(client, message: Message):
+    uid = message.from_user.id
+    if len(message.command) < 2:
+        await message.reply("⚠️ Please provide a video token. Example: `/reuse abc1234`")
+        return
+    
+    token = message.command[1]
+    if token not in SAVED_VIDEOS or not os.path.exists(SAVED_VIDEOS[token]):
+        await message.reply("❌ Invalid or expired video token.")
+        return
+        
+    workflow.reset_cancel_flag(uid)
+    workflow.clear_state(uid)
+    workflow.set_state(uid, flow="mux", step="await_sub", video=SAVED_VIDEOS[token])
+    
+    await message.reply(
+        "♻️ <b>Video loaded from server!</b>\n\n📄 <b>Step 2/4 — Send your .ass subtitle file.</b>",
         parse_mode=ParseMode.HTML,
         reply_markup=CANCEL_KB,
     )
@@ -176,6 +233,24 @@ async def cmd_skip(client, message: Message):
         )
     else:
         await message.reply("Nothing to skip right now.")
+
+# ──────────────────────────────────────────────
+# Skip thumbnail callback
+# ──────────────────────────────────────────────
+@app.on_callback_query(filters.regex("^skip_thumb$"))
+@auth_only
+async def cb_skip_thumb(client, cq: CallbackQuery):
+    uid = cq.from_user.id
+    state = workflow.get_state(uid)
+    if state.get("flow") == "mux" and state.get("step") == "await_thumb":
+        workflow.set_state(uid, thumb=None, step="await_filename")
+        await cq.message.edit_text(
+            "✏️ <b>Step 4/4 — Send the output filename</b> (without extension):",
+            parse_mode=ParseMode.HTML,
+            reply_markup=CANCEL_KB,
+        )
+    else:
+        await cq.answer("Nothing to skip right now.", show_alert=True)
 
 # ──────────────────────────────────────────────
 # Style mode keyboard callback
@@ -315,9 +390,12 @@ async def on_file(client, message: Message):
                 workflow.clear_state(uid); return
             workflow.set_state(uid, sub=path, step="await_thumb")
             await status.edit_text(
-                "🖼 <b>Step 3/4 — Send a thumbnail image or /skip.</b>",
+                "🖼 <b>Step 3/4 — Send a thumbnail image or skip.</b>",
                 parse_mode=ParseMode.HTML,
-                reply_markup=CANCEL_KB,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⏭ Skip Thumbnail", callback_data="skip_thumb")],
+                    [InlineKeyboardButton("✖️ CANCEL ✖️", callback_data="cancel")]
+                ]),
             )
 
         elif step == "await_thumb":
@@ -388,7 +466,7 @@ async def on_file(client, message: Message):
 # ──────────────────────────────────────────────
 # Text handler (filename step in mux flow)
 # ──────────────────────────────────────────────
-@app.on_message(filters.private & filters.text & ~filters.command(["start","help","mux","style","convert","cancel","skip"]))
+@app.on_message(filters.private & filters.text & ~filters.command(["start","help","mux","style","convert","cancel","skip","reuse","reuser"]))
 @auth_only
 async def on_text(client, message: Message):
     uid = message.from_user.id
@@ -404,6 +482,7 @@ async def on_text(client, message: Message):
         thumb_path = state.get("thumb")
         out_path = f"downloads/{out_name}.mkv"
         cancel = workflow.get_cancel_flag(uid)
+        is_reused = video_path in SAVED_VIDEOS.values()
 
         status = await message.reply("⚙️ Muxing…", reply_markup=CANCEL_KB)
         logger.info(f"User {uid} started muxing {video_path} + {sub_path} -> {out_path}")
@@ -412,12 +491,16 @@ async def on_text(client, message: Message):
         except Exception as e:
             logger.error(f"Mux failed: {e}")
             await status.edit_text(f"❌ Mux failed:\n<code>{e}</code>", parse_mode=ParseMode.HTML)
-            _cleanup(video_path, sub_path, thumb_path, out_path)
+            _cleanup(sub_path, thumb_path, out_path)
+            if not is_reused:
+                _cleanup(video_path)
             workflow.clear_state(uid)
             return
 
         if cancel.is_set():
-            _cleanup(video_path, sub_path, thumb_path, out_path)
+            _cleanup(sub_path, thumb_path, out_path)
+            if not is_reused:
+                _cleanup(video_path)
             workflow.clear_state(uid)
             return
 
@@ -433,10 +516,36 @@ async def on_text(client, message: Message):
             cancel_flag=cancel,
         )
 
-        _cleanup(video_path, sub_path, thumb_path, out_path)
-        workflow.clear_state(uid)
+        _cleanup(sub_path, thumb_path, out_path)
+        
         if not cancel.is_set():
             await status.edit_text("✅ Done!")
+            
+            if not is_reused:
+                token = secrets.token_hex(4)
+                _, ext = os.path.splitext(video_path)
+                saved_video_path = f"downloads/saved_{token}{ext}"
+                try:
+                    os.rename(video_path, saved_video_path)
+                    SAVED_VIDEOS[token] = saved_video_path
+                    asyncio.create_task(delayed_delete(saved_video_path, 7200))
+                except Exception:
+                    token = None
+                    _cleanup(video_path)
+            else:
+                token = next((k for k, v in SAVED_VIDEOS.items() if v == video_path), None)
+            
+            if token:
+                await client.send_message(
+                    message.chat.id,
+                    f"♻️ Video saved on server for 2 hours!\nTo reuse this video for another mux, use:\n<code>/reuse {token}</code>",
+                    parse_mode=ParseMode.HTML
+                )
+        else:
+            if not is_reused:
+                _cleanup(video_path)
+
+        workflow.clear_state(uid)
 
 
 # ──────────────────────────────────────────────
