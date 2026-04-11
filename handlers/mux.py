@@ -61,8 +61,9 @@ async def register_mux_handlers(client, state_store: dict[int, JobState]):
             return
 
         # 1) waiting for video
-        if st.stage == "waiting_video" and event.file:
-            if not event.file.mime_type or not event.file.mime_type.startswith("video/"):
+        if st.stage == "waiting_video" and (event.video or event.file):
+            if not event.video:
+                await event.reply("Please send a valid video file.")
                 return
             st.video_path = await download_telegram_media(event.message, WORK_DIR)
             st.stage = "waiting_subtitle_choice"
