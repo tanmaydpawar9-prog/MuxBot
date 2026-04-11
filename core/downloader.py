@@ -2,6 +2,7 @@ import asyncio
 import os
 import time
 from pyrogram import Client
+from pyrogram.enums import ParseMode
 from pyrogram.types import Message
 from utils.progress import ProgressTracker
 
@@ -29,7 +30,7 @@ async def download_media(
         text = tracker.render(action, current, total)
         if status_msg:
             try:
-                await status_msg.edit_text(text, parse_mode="html")
+                await status_msg.edit_text(text, parse_mode=ParseMode.HTML)
             except Exception:
                 pass
 
@@ -44,7 +45,7 @@ async def download_media(
     except Exception as e:
         if status_msg:
             try:
-                await status_msg.edit_text(f"❌ Download failed:\n<code>{e}</code>", parse_mode="html")
+                await status_msg.edit_text(f"❌ Download failed:\n<code>{e}</code>", parse_mode=ParseMode.HTML)
             except Exception:
                 pass
         return None

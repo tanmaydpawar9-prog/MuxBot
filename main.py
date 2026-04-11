@@ -6,6 +6,7 @@ import logging
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 from pyrogram import Client, filters
+from pyrogram.enums import ParseMode
 from pyrogram.types import (
     InlineKeyboardMarkup, InlineKeyboardButton,
     Message, CallbackQuery,
@@ -79,7 +80,7 @@ async def cmd_start(client, message: Message):
         "<b>/style</b> — Style SRT/ASS subtitle\n"
         "<b>/convert</b> — Convert SRT ↔ ASS\n\n"
         "Send /cancel at any time to abort.",
-        parse_mode="html",
+        parse_mode=ParseMode.HTML,
     )
 
 # ──────────────────────────────────────────────
@@ -118,7 +119,7 @@ async def cmd_mux(client, message: Message):
     workflow.set_state(uid, flow="mux", step="await_video")
     await message.reply(
         "📹 <b>Step 1/4 — Send your video file.</b>",
-        parse_mode="html",
+        parse_mode=ParseMode.HTML,
         reply_markup=CANCEL_KB,
     )
 
@@ -136,7 +137,7 @@ async def cmd_style(client, message: Message):
     workflow.set_state(uid, flow="style", step="await_sub")
     await message.reply(
         "📄 <b>Step 1/2 — Send your .srt or .ass subtitle file.</b>",
-        parse_mode="html",
+        parse_mode=ParseMode.HTML,
         reply_markup=CANCEL_KB,
     )
 
@@ -154,7 +155,7 @@ async def cmd_convert(client, message: Message):
     workflow.set_state(uid, flow="convert", step="await_sub")
     await message.reply(
         "📄 <b>Send your .srt or .ass file to convert.</b>",
-        parse_mode="html",
+        parse_mode=ParseMode.HTML,
         reply_markup=CANCEL_KB,
     )
 
@@ -170,7 +171,7 @@ async def cmd_skip(client, message: Message):
         workflow.set_state(uid, thumb=None, step="await_filename")
         await message.reply(
             "✏️ <b>Step 4/4 — Send the output filename</b> (without extension):",
-            parse_mode="html",
+            parse_mode=ParseMode.HTML,
             reply_markup=CANCEL_KB,
         )
     else:
@@ -190,7 +191,7 @@ async def cb_style_mode(client, cq: CallbackQuery):
 
     mode = cq.data.split("_", 1)[1]  # 'cinematic' or 'full4k'
     workflow.set_state(uid, mode=mode, step="processing")
-    await cq.message.edit_text(f"⚙️ Applying <b>{'Cinematic 816p' if mode == 'cinematic' else 'Full 4K 1080p'}</b> style…", parse_mode="html")
+    await cq.message.edit_text(f"⚙️ Applying <b>{'Cinematic 816p' if mode == 'cinematic' else 'Full 4K 1080p'}</b> style…", parse_mode=ParseMode.HTML)
 
     sub_path = state["sub"]
     out_path = sub_path.rsplit(".", 1)[0] + f"_{mode}.ass"
@@ -201,7 +202,7 @@ async def cb_style_mode(client, cq: CallbackQuery):
         await inject_style(sub_path, out_path, mode)
     except Exception as e:
         logger.error(f"Style failed: {e}")
-        await cq.message.edit_text(f"❌ Failed:\n<code>{e}</code>", parse_mode="html")
+        await cq.message.edit_text(f"❌ Failed:\n<code>{e}</code>", parse_mode=ParseMode.HTML)
         _cleanup(sub_path)
         workflow.clear_state(uid)
         return
@@ -253,7 +254,7 @@ async def cb_convert_dir(client, cq: CallbackQuery):
         await convert_subtitle(sub_path, out_path)
     except Exception as e:
         logger.error(f"Conversion failed: {e}")
-        await cq.message.edit_text(f"❌ Failed:\n<code>{e}</code>", parse_mode="html")
+        await cq.message.edit_text(f"❌ Failed:\n<code>{e}</code>", parse_mode=ParseMode.HTML)
         _cleanup(sub_path)
         workflow.clear_state(uid)
         return
@@ -299,7 +300,7 @@ async def on_file(client, message: Message):
             workflow.set_state(uid, video=path, step="await_sub")
             await status.edit_text(
                 "📄 <b>Step 2/4 — Send your .ass subtitle file.</b>",
-                parse_mode="html",
+                parse_mode=ParseMode.HTML,
                 reply_markup=CANCEL_KB,
             )
 
@@ -315,7 +316,7 @@ async def on_file(client, message: Message):
             workflow.set_state(uid, sub=path, step="await_thumb")
             await status.edit_text(
                 "🖼 <b>Step 3/4 — Send a thumbnail image or /skip.</b>",
-                parse_mode="html",
+                parse_mode=ParseMode.HTML,
                 reply_markup=CANCEL_KB,
             )
 
@@ -327,7 +328,7 @@ async def on_file(client, message: Message):
             workflow.set_state(uid, thumb=path, step="await_filename")
             await status.edit_text(
                 "✏️ <b>Step 4/4 — Send the output filename</b> (without extension):",
-                parse_mode="html",
+                parse_mode=ParseMode.HTML,
                 reply_markup=CANCEL_KB,
             )
 
@@ -345,7 +346,7 @@ async def on_file(client, message: Message):
             workflow.set_state(uid, sub=path, step="await_mode", origin_msg_id=message.id)
             await status.edit_text(
                 "🎨 <b>Step 2/2 — Choose style mode:</b>",
-                parse_mode="html",
+                parse_mode=ParseMode.HTML,
                 reply_markup=InlineKeyboardMarkup([
                     [
                         InlineKeyboardButton("🎞 Cinematic (816p)", callback_data="style_cinematic"),
@@ -379,7 +380,7 @@ async def on_file(client, message: Message):
 
             await status.edit_text(
                 "🔄 <b>Choose conversion direction:</b>",
-                parse_mode="html",
+                parse_mode=ParseMode.HTML,
                 reply_markup=InlineKeyboardMarkup([buttons]),
             )
 
@@ -410,7 +411,7 @@ async def on_text(client, message: Message):
             await mux_video(video_path, sub_path, out_path, thumb_path)
         except Exception as e:
             logger.error(f"Mux failed: {e}")
-            await status.edit_text(f"❌ Mux failed:\n<code>{e}</code>", parse_mode="html")
+            await status.edit_text(f"❌ Mux failed:\n<code>{e}</code>", parse_mode=ParseMode.HTML)
             _cleanup(video_path, sub_path, thumb_path, out_path)
             workflow.clear_state(uid)
             return

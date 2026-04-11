@@ -1,6 +1,7 @@
 import asyncio
 import time
 from pyrogram import Client
+from pyrogram.enums import ParseMode
 from pyrogram.types import Message
 from utils.progress import ProgressTracker
 
@@ -28,7 +29,7 @@ async def upload_video(
         text = tracker.render("Upload", current, total)
         if status_msg:
             try:
-                await status_msg.edit_text(text, parse_mode="html")
+                await status_msg.edit_text(text, parse_mode=ParseMode.HTML)
             except Exception:
                 pass
 
@@ -47,5 +48,5 @@ async def upload_video(
         return None
     except Exception as e:
         if status_msg:
-            await status_msg.edit_text(f"❌ Upload failed:\n<code>{e}</code>", parse_mode="html")
+            await status_msg.edit_text(f"❌ Upload failed:\n<code>{e}</code>", parse_mode=ParseMode.HTML)
         return None
