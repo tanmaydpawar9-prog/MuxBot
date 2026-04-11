@@ -117,7 +117,9 @@ async def cmd_cancel(client, message: Message):
     workflow.cancel_user(uid)
     
     state = workflow.get_state(uid)
-    v, s, t = state.get("video"), state.get("sub"), state.get("thumb")
+    v = state.get("video_dl_path") or state.get("video")
+    s = state.get("sub")
+    t = state.get("thumb")
     if v and v not in SAVED_VIDEOS.values(): _cleanup(v)
     _cleanup(s, t)
     
@@ -134,7 +136,9 @@ async def cb_cancel(client, cq: CallbackQuery):
     workflow.cancel_user(uid)
     
     state = workflow.get_state(uid)
-    v, s, t = state.get("video"), state.get("sub"), state.get("thumb")
+    v = state.get("video_dl_path") or state.get("video")
+    s = state.get("sub")
+    t = state.get("thumb")
     if v and v not in SAVED_VIDEOS.values(): _cleanup(v)
     _cleanup(s, t)
     
@@ -179,7 +183,7 @@ async def cmd_reuse(client, message: Message):
         
     workflow.reset_cancel_flag(uid)
     workflow.clear_state(uid)
-    workflow.set_state(uid, flow="mux", step="await_sub", video=SAVED_VIDEOS[token])
+    workflow.set_state(uid, flow="mux", step="await_sub", video_dl_path=SAVED_VIDEOS[token], is_reused=True)
     
     await message.reply(
         "♻️ <b>Video loaded from server!</b>\n\n📄 <b>Step 2/4 — Send your .ass subtitle file.</b>",
@@ -232,7 +236,7 @@ async def cmd_skip(client, message: Message):
     uid = message.from_user.id
     state = workflow.get_state(uid)
     if state.get("flow") == "mux" and state.get("step") == "await_thumb":
-        workflow.set_state(uid, thumb=None, step="await_filename")
+        workflow.set_state(uid, thumb_msg=None, step="await_filename")
         await message.reply(
             "✏️ <b>Step 4/4 — Send the output filename</b> (without extension):",
             parse_mode=ParseMode.HTML,
@@ -250,7 +254,7 @@ async def cb_skip_thumb(client, cq: CallbackQuery):
     uid = cq.from_user.id
     state = workflow.get_state(uid)
     if state.get("flow") == "mux" and state.get("step") == "await_thumb":
-        workflow.set_state(uid, thumb=None, step="await_filename")
+        workflow.set_state(uid, thumb_msg=None, step="await_filename")
         await cq.message.edit_text(
             "✏️ <b>Step 4/4 — Send the output filename</b> (without extension):",
             parse_mode=ParseMode.HTML,
@@ -258,6 +262,37 @@ async def cb_skip_thumb(client, cq: CallbackQuery):
         )
     else:
         await cq.answer("Nothing to skip right now.", show_alert=True)
+
+# ──────────────────────────────────────────────
+# Download Video First callback
+# ──────────────────────────────────────────────
+@app.on_callback_query(filters.regex("^dl_video_first$"))
+@auth_only
+async def cb_dl_video_first(client, cq: CallbackQuery):
+    uid = cq.from_user.id
+    state = workflow.get_state(uid)
+    if state.get("flow") == "mux" and state.get("step") == "await_sub":
+        video_msg = state.get("video_msg")
+        if not video_msg:
+            await cq.answer("Video message missing.", show_alert=True)
+            return
+
+        cancel = workflow.get_cancel_flag(uid)
+        
+        await cq.message.edit_text("⬇️ Downloading video…", reply_markup=CANCEL_KB)
+        path = await download_media(client, video_msg, cq.message, cancel, "Download")
+        if not path:
+            return
+            
+        workflow.set_state(uid, video_dl_path=path)
+        
+        await cq.message.edit_text(
+            "✅ <b>Video downloaded!</b>\n\n📄 <b>Step 2/4 — Send your .ass subtitle file.</b>",
+            parse_mode=ParseMode.HTML,
+            reply_markup=CANCEL_KB
+        )
+    else:
+        await cq.answer("Action not available right now.", show_alert=True)
 
 # ──────────────────────────────────────────────
 # Style mode keyboard callback
@@ -375,15 +410,15 @@ async def on_file(client, message: Message):
             if not (message.video or (message.document and message.document.mime_type and "video" in message.document.mime_type)):
                 await message.reply("⚠️ Please send a video file.")
                 return
-            status = await message.reply("⬇️ Downloading video…", reply_markup=CANCEL_KB)
-            path = await download_media(client, message, status, cancel, "Download")
-            if not path:
-                workflow.clear_state(uid); return
-            workflow.set_state(uid, video=path, step="await_sub")
-            await status.edit_text(
-                "📄 <b>Step 2/4 — Send your .ass subtitle file.</b>",
+            workflow.set_state(uid, video_msg=message, step="await_sub", is_reused=False)
+            await message.reply(
+                "📄 <b>Step 2/4 — Send your .ass subtitle file.</b>\n"
+                "<i>(Files will download at the end, or click below to download the video now)</i>",
                 parse_mode=ParseMode.HTML,
-                reply_markup=CANCEL_KB,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬇️ Download Video Now", callback_data="dl_video_first")],
+                    [InlineKeyboardButton("✖️ CANCEL ✖️", callback_data="cancel")]
+                ])
             )
 
         elif step == "await_sub":
@@ -391,12 +426,8 @@ async def on_file(client, message: Message):
             if not fname.endswith(".ass"):
                 await message.reply("⚠️ Please send an .ass subtitle file.")
                 return
-            status = await message.reply("⬇️ Downloading subtitle…", reply_markup=CANCEL_KB)
-            path = await download_media(client, message, status, cancel, "Download")
-            if not path:
-                workflow.clear_state(uid); return
-            workflow.set_state(uid, sub=path, step="await_thumb")
-            await status.edit_text(
+            workflow.set_state(uid, sub_msg=message, step="await_thumb")
+            await message.reply(
                 "🖼 <b>Step 3/4 — Send a thumbnail image or skip.</b>",
                 parse_mode=ParseMode.HTML,
                 reply_markup=InlineKeyboardMarkup([
@@ -406,12 +437,8 @@ async def on_file(client, message: Message):
             )
 
         elif step == "await_thumb":
-            status = await message.reply("⬇️ Downloading thumbnail…", reply_markup=CANCEL_KB)
-            path = await download_media(client, message, status, cancel, "Download")
-            if not path:
-                workflow.clear_state(uid); return
-            workflow.set_state(uid, thumb=path, step="await_filename")
-            await status.edit_text(
+            workflow.set_state(uid, thumb_msg=message, step="await_filename")
+            await message.reply(
                 "✏️ <b>Step 4/4 — Send the output filename</b> (without extension):",
                 parse_mode=ParseMode.HTML,
                 reply_markup=CANCEL_KB,
@@ -484,50 +511,65 @@ async def on_text(client, message: Message):
             await message.reply("⚠️ Please send a valid filename.")
             return
 
-        video_path = state["video"]
-        sub_path = state["sub"]
-        thumb_path = state.get("thumb")
-        out_path = f"downloads/{out_name}.mkv"
         cancel = workflow.get_cancel_flag(uid)
-        is_reused = video_path in SAVED_VIDEOS.values()
+        is_reused = state.get("is_reused", False)
+        video_path = state.get("video_dl_path")
+        sub_path = None
+        thumb_path = None
+        out_path = f"downloads/{out_name}.mkv"
 
-        status = await message.reply("⚙️ Muxing…", reply_markup=CANCEL_KB)
-        logger.info(f"User {uid} started muxing {video_path} + {sub_path} -> {out_path}")
+        status = await message.reply("⚙️ Preparing…", reply_markup=CANCEL_KB)
+
         try:
+            # 1. Download Video
+            if not video_path:
+                if is_reused:
+                    await status.edit_text("❌ Error: Reused video path missing.")
+                    return
+                await status.edit_text("⬇️ Downloading video…", reply_markup=CANCEL_KB)
+                video_path = await download_media(client, state["video_msg"], status, cancel, "Download")
+                if not video_path:
+                    return
+                workflow.set_state(uid, video_dl_path=video_path)
+
+            # 2. Download Subtitle
+            await status.edit_text("⬇️ Downloading subtitle…", reply_markup=CANCEL_KB)
+            sub_path = await download_media(client, state["sub_msg"], status, cancel, "Download")
+            if not sub_path:
+                return
+
+            # 3. Download Thumbnail
+            if state.get("thumb_msg"):
+                await status.edit_text("⬇️ Downloading thumbnail…", reply_markup=CANCEL_KB)
+                thumb_path = await download_media(client, state["thumb_msg"], status, cancel, "Download")
+                if cancel.is_set():
+                    return
+
+            # 4. Mux
+            await status.edit_text("⚙️ Muxing…", reply_markup=CANCEL_KB)
+            logger.info(f"User {uid} started muxing {video_path} + {sub_path} -> {out_path}")
             await mux_video(video_path, sub_path, out_path, thumb_path)
-        except Exception as e:
-            logger.error(f"Mux failed: {e}")
-            await status.edit_text(f"❌ Mux failed:\n<code>{e}</code>", parse_mode=ParseMode.HTML)
-            _cleanup(sub_path, thumb_path, out_path)
-            if not is_reused:
-                _cleanup(video_path)
-            workflow.clear_state(uid)
-            return
 
-        if cancel.is_set():
-            _cleanup(sub_path, thumb_path, out_path)
-            if not is_reused:
-                _cleanup(video_path)
-            workflow.clear_state(uid)
-            return
+            if cancel.is_set():
+                return
 
-        caption = extract_caption(out_name + ".mkv")
-        await status.edit_text("📤 Uploading…", reply_markup=CANCEL_KB)
-        await upload_video(
-            client,
-            message.chat.id,
-            out_path,
-            caption=caption,
-            thumb=thumb_path,
-            status_msg=status,
-            cancel_flag=cancel,
-        )
+            # 5. Upload
+            caption = extract_caption(out_name + ".mkv")
+            await status.edit_text("📤 Uploading…", reply_markup=CANCEL_KB)
+            await upload_video(
+                client,
+                message.chat.id,
+                out_path,
+                caption=caption,
+                thumb=thumb_path,
+                status_msg=status,
+                cancel_flag=cancel,
+            )
 
-        _cleanup(sub_path, thumb_path, out_path)
-        
-        if not cancel.is_set():
-            await status.edit_text("✅ Done!")
-            
+            if cancel.is_set():
+                return
+
+            # Token logic
             if not is_reused:
                 token = secrets.token_hex(4)
                 _, ext = os.path.splitext(video_path)
@@ -536,6 +578,7 @@ async def on_text(client, message: Message):
                     os.rename(video_path, saved_video_path)
                     SAVED_VIDEOS[token] = saved_video_path
                     asyncio.create_task(delayed_delete(saved_video_path, 7200))
+                    video_path = saved_video_path
                 except Exception:
                     token = None
                     _cleanup(video_path)
@@ -548,11 +591,16 @@ async def on_text(client, message: Message):
                     f"♻️ Video saved on server for 2 hours!\nTo reuse this video for another mux, use:\n<code>/reuse {token}</code>",
                     parse_mode=ParseMode.HTML
                 )
-        else:
-            if not is_reused:
-                _cleanup(video_path)
 
-        workflow.clear_state(uid)
+        except Exception as e:
+            logger.error(f"Mux failed: {e}")
+            if not cancel.is_set():
+                await status.edit_text(f"❌ Mux failed:\n<code>{e}</code>", parse_mode=ParseMode.HTML)
+        finally:
+            _cleanup(sub_path, thumb_path, out_path)
+            if cancel.is_set() or (not is_reused and video_path and video_path not in SAVED_VIDEOS.values()):
+                _cleanup(video_path)
+            workflow.clear_state(uid)
 
 
 # ──────────────────────────────────────────────
