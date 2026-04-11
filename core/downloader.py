@@ -16,6 +16,7 @@ async def download_media(
     status_msg: Message,
     cancel_flag: asyncio.Event,
     action: str = "Download",
+    custom_name: str = None,
 ) -> str | None:
     tracker = ProgressTracker()
     last_edit = [0.0]
@@ -25,10 +26,16 @@ async def download_media(
         return None
         
     file_size = getattr(media, "file_size", 0)
-    file_name = getattr(media, "file_name", "downloaded_media")
-    if not file_name:
-        file_name = f"file_{message.id}"
+    orig_name = getattr(media, "file_name", "")
+    ext = os.path.splitext(orig_name)[1] if orig_name else ".mp4"
+    if not ext:
+        ext = ".mp4"
         
+    if custom_name:
+        file_name = custom_name + ext
+    else:
+        file_name = orig_name if orig_name else f"file_{message.id}{ext}"
+
     output_path = os.path.join(DOWNLOAD_DIR, file_name)
 
     async def progress(current, total):
@@ -40,7 +47,11 @@ async def download_media(
             text = tracker.render(action, current, total)
             if status_msg:
                 try:
-                    await status_msg.edit_text(text, parse_mode=ParseMode.HTML)
+                    await status_msg.edit_text(
+                        text, 
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=status_msg.reply_markup
+                    )
                 except Exception:
                     pass
 
@@ -83,7 +94,7 @@ async def download_media(
                         finally:
                             queue.task_done()
                             
-            tasks = [asyncio.create_task(worker()) for _ in range(5)]
+            tasks = [asyncio.create_task(worker()) for _ in range(10)]
             await asyncio.gather(*tasks)
             
             if error_event.is_set():
@@ -98,7 +109,7 @@ async def download_media(
         else:
             path = await client.download_media(
                 message,
-                file_name=DOWNLOAD_DIR + "/",
+                file_name=output_path,
                 progress=progress,
             )
             return path

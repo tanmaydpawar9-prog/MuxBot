@@ -4,6 +4,8 @@ import shutil
 import threading
 import logging
 import secrets
+import re
+from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 try:
@@ -28,6 +30,7 @@ from utils.caption import extract_caption
 from utils.ffmpeg import mux_video, inject_style, convert_subtitle
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logging.getLogger("pyrogram").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 # ──────────────────────────────────────────────
@@ -68,7 +71,7 @@ app = Client(
     api_id=config.API_ID,
     api_hash=config.API_HASH,
     bot_token=config.BOT_TOKEN,
-    max_concurrent_transmissions=5,
+    max_concurrent_transmissions=10,
 )
 
 # ──────────────────────────────────────────────
@@ -280,7 +283,10 @@ async def cb_dl_video_first(client, cq: CallbackQuery):
         cancel = workflow.get_cancel_flag(uid)
         
         await cq.message.edit_text("⬇️ Downloading video…", reply_markup=CANCEL_KB)
-        path = await download_media(client, video_msg, cq.message, cancel, "Download")
+        now_str = datetime.now().strftime("%d_%m_%y_%I_%M_%p").lower()
+        custom_video_name = f"video_{now_str}"
+        
+        path = await download_media(client, video_msg, cq.message, cancel, "Download", custom_name=custom_video_name)
         if not path:
             return
             
@@ -507,6 +513,7 @@ async def on_text(client, message: Message):
     state = workflow.get_state(uid)
     if state.get("flow") == "mux" and state.get("step") == "await_filename":
         out_name = message.text.strip()
+        out_name = re.sub(r'[\\/*?:"<>|]', "", out_name)
         if not out_name:
             await message.reply("⚠️ Please send a valid filename.")
             return
@@ -527,7 +534,7 @@ async def on_text(client, message: Message):
                     await status.edit_text("❌ Error: Reused video path missing.")
                     return
                 await status.edit_text("⬇️ Downloading video…", reply_markup=CANCEL_KB)
-                video_path = await download_media(client, state["video_msg"], status, cancel, "Download")
+                video_path = await download_media(client, state["video_msg"], status, cancel, "Download", custom_name=f"{out_name}_input")
                 if not video_path:
                     return
                 workflow.set_state(uid, video_dl_path=video_path)
@@ -598,7 +605,7 @@ async def on_text(client, message: Message):
                 await status.edit_text(f"❌ Mux failed:\n<code>{e}</code>", parse_mode=ParseMode.HTML)
         finally:
             _cleanup(sub_path, thumb_path, out_path)
-            if cancel.is_set() or (not is_reused and video_path and video_path not in SAVED_VIDEOS.values()):
+            if video_path and video_path not in SAVED_VIDEOS.values():
                 _cleanup(video_path)
             workflow.clear_state(uid)
 

@@ -29,7 +29,11 @@ async def upload_video(
         text = tracker.render("Upload", current, total)
         if status_msg:
             try:
-                await status_msg.edit_text(text, parse_mode=ParseMode.HTML)
+                await status_msg.edit_text(
+                    text, 
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=status_msg.reply_markup
+                )
             except Exception:
                 pass
 
