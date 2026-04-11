@@ -1,3 +1,11 @@
+---
+title: MuxBot
+emoji: 🎬
+colorFrom: blue
+colorTo: indigo
+sdk: docker
+pinned: false
+---
 # 🎬 MuxBot
 
 Telegram bot for muxing, styling, and converting subtitles — built for donghua content.
