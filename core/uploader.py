@@ -34,9 +34,9 @@ async def upload_video(
                 pass
 
     try:
-            sent = await client.send_document(
+        sent = await client.send_document(
             chat_id=chat_id,
-                document=file_path,
+            document=file_path,
             caption=caption,
             thumb=thumb,
             progress=progress,
