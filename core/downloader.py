@@ -1,6 +1,7 @@
 import asyncio
 import os
 import time
+import math
 from pyrogram import Client
 from pyrogram.enums import ParseMode
 from pyrogram.errors import FloodWait
@@ -59,57 +60,73 @@ async def download_media(
     try:
         # Parallel chunk downloading for massive files
         if file_size > 10 * 1024 * 1024:
-            # Pre-authenticate to the media DC sequentially to avoid auth export floods
-            try:
-                async for _ in client.stream_media(message, limit=1):
-                    break
-            except FloodWait as e:
-                await asyncio.sleep(e.value)
-            except Exception:
-                pass
-
             chunk_size = 1024 * 1024
-            total_chunks = (file_size + chunk_size - 1) // chunk_size
+            total_chunks = math.ceil(file_size / chunk_size)
             
             with open(output_path, "wb") as f:
                 f.truncate(file_size) # Create sparse file instantly
                 
-            queue = asyncio.Queue()
-            for i in range(total_chunks):
-                queue.put_nowait((i, 0))  # (chunk_index, retries)
-                
             downloaded = [0]
             error_event = asyncio.Event()
+
+            # Pre-auth and fetch first chunk sequentially to lock DC auth
+            try:
+                data = b""
+                async for chunk in client.stream_media(message, limit=1, offset=0):
+                    data += chunk
+                if data:
+                    with open(output_path, "r+b") as f:
+                        f.seek(0)
+                        f.write(data)
+                    downloaded[0] += len(data)
+                    await progress(downloaded[0], file_size)
+            except FloodWait as e:
+                await asyncio.sleep(e.value + 1)
+            except Exception:
+                pass
             
-            async def worker():
-                with open(output_path, "r+b") as f:
-                    while not queue.empty() and not error_event.is_set():
+            if total_chunks > 1:
+                remaining_chunks = total_chunks - 1
+                workers = 5
+                chunks_per_worker = math.ceil(remaining_chunks / workers)
+
+                async def worker(start_chunk, end_chunk):
+                    current_chunk = start_chunk
+                    retries = 0
+                    while current_chunk <= end_chunk and retries < 5 and not error_event.is_set():
                         if cancel_flag and cancel_flag.is_set():
                             break
-                        chunk_idx, retries = await queue.get()
                         try:
-                            data = b""
-                            async for chunk in client.stream_media(message, limit=1, offset=chunk_idx):
-                                data += chunk
-                            if data:
-                                f.seek(chunk_idx * chunk_size)
-                                f.write(data)
-                                downloaded[0] += len(data)
-                                await progress(downloaded[0], file_size)
+                            limit = end_chunk - current_chunk + 1
+                            with open(output_path, "r+b") as f:
+                                async for chunk in client.stream_media(message, limit=limit, offset=current_chunk):
+                                    if cancel_flag and cancel_flag.is_set() or error_event.is_set():
+                                        break
+                                    f.seek(current_chunk * chunk_size)
+                                    f.write(chunk)
+                                    downloaded[0] += len(chunk)
+                                    current_chunk += 1
+                                    await progress(downloaded[0], file_size)
+                            retries = 0  # reset on success
                         except FloodWait as e:
                             await asyncio.sleep(e.value + 1)
-                            queue.put_nowait((chunk_idx, retries))
                         except Exception:
-                            if retries < 5:
-                                await asyncio.sleep(1)
-                                queue.put_nowait((chunk_idx, retries + 1))
-                            else:
-                                error_event.set()
-                        finally:
-                            queue.task_done()
-                            
-            tasks = [asyncio.create_task(worker()) for _ in range(10)]
-            await asyncio.gather(*tasks)
+                            retries += 1
+                            await asyncio.sleep(1)
+                    
+                    if retries >= 5:
+                        error_event.set()
+
+                tasks = []
+                for i in range(workers):
+                    start = 1 + i * chunks_per_worker
+                    if start > total_chunks - 1:
+                        break
+                    end = min(start + chunks_per_worker - 1, total_chunks - 1)
+                    tasks.append(asyncio.create_task(worker(start, end)))
+                    
+                if tasks:
+                    await asyncio.gather(*tasks)
             
             if error_event.is_set():
                 raise RuntimeError("Failed to download media chunks after multiple retries.")
