@@ -104,8 +104,8 @@ async def cmd_start(client, message: Message):
     await message.reply(
         "<b>🎬 MuxBot</b>\n\n"
         "<b>/mux</b> — Mux video + ASS subtitle\n"
-        "<b>/style</b> — Style SRT/ASS subtitle\n"
-        "<b>/convert</b> — Convert SRT ↔ ASS\n\n"
+        "<b>/style</b> — Style SRT/VTT/ASS subtitle\n"
+        "<b>/convert</b> — Convert SRT/VTT/ASS\n\n"
         "Send /cancel at any time to abort.",
         parse_mode=ParseMode.HTML,
     )
@@ -207,7 +207,7 @@ async def cmd_style(client, message: Message):
     workflow.clear_state(uid)
     workflow.set_state(uid, flow="style", step="await_sub")
     await message.reply(
-        "📄 <b>Step 1/2 — Send your .srt or .ass subtitle file.</b>",
+        "📄 <b>Step 1/2 — Send your .srt, .vtt, or .ass subtitle file.</b>",
         parse_mode=ParseMode.HTML,
         reply_markup=CANCEL_KB,
     )
@@ -225,7 +225,7 @@ async def cmd_convert(client, message: Message):
     workflow.clear_state(uid)
     workflow.set_state(uid, flow="convert", step="await_sub")
     await message.reply(
-        "📄 <b>Send your .srt or .ass file to convert.</b>",
+        "📄 <b>Send your .srt, .vtt, or .ass file to convert.</b>",
         parse_mode=ParseMode.HTML,
         reply_markup=CANCEL_KB,
     )
@@ -347,7 +347,7 @@ async def cb_style_mode(client, cq: CallbackQuery):
 # ──────────────────────────────────────────────
 # Convert direction callback
 # ──────────────────────────────────────────────
-@app.on_callback_query(filters.regex("^conv_(srt2ass|ass2srt)$"))
+@app.on_callback_query(filters.regex(r"^conv_([a-z0-9]+2[a-z0-9]+)$"))
 @auth_only
 async def cb_convert_dir(client, cq: CallbackQuery):
     uid = cq.from_user.id
@@ -357,18 +357,16 @@ async def cb_convert_dir(client, cq: CallbackQuery):
         return
 
     direction = cq.data.split("_", 1)[1]
+    src_ext, dst_ext = direction.split("2")
     sub_path = state["sub"]
-    ext_in = os.path.splitext(sub_path)[1].lower()
+    ext_in = os.path.splitext(sub_path)[1].lower().strip(".")
 
     # Validate direction matches file
-    if direction == "srt2ass" and ext_in != ".srt":
-        await cq.answer("File is not .srt", show_alert=True)
-        return
-    if direction == "ass2srt" and ext_in != ".ass":
-        await cq.answer("File is not .ass", show_alert=True)
+    if src_ext != ext_in:
+        await cq.answer(f"File is not .{src_ext}", show_alert=True)
         return
 
-    out_ext = ".ass" if direction == "srt2ass" else ".srt"
+    out_ext = f".{dst_ext}"
     out_path = sub_path.rsplit(".", 1)[0] + "_converted" + out_ext
     await cq.message.edit_text("⚙️ Converting…")
 
@@ -454,8 +452,8 @@ async def on_file(client, message: Message):
     elif flow == "style":
         if step == "await_sub":
             fname = _doc_name(message)
-            if not (fname.endswith(".srt") or fname.endswith(".ass")):
-                await message.reply("⚠️ Please send a .srt or .ass file.")
+            if not (fname.endswith(".srt") or fname.endswith(".ass") or fname.endswith(".vtt")):
+                await message.reply("⚠️ Please send a .srt, .vtt, or .ass file.")
                 return
             status = await message.reply("⬇️ Downloading subtitle…", reply_markup=CANCEL_KB)
             path = await download_media(client, message, status, cancel, "Download")
@@ -478,28 +476,30 @@ async def on_file(client, message: Message):
     elif flow == "convert":
         if step == "await_sub":
             fname = _doc_name(message)
-            if not (fname.endswith(".srt") or fname.endswith(".ass")):
-                await message.reply("⚠️ Please send a .srt or .ass file.")
+            if not (fname.endswith(".srt") or fname.endswith(".ass") or fname.endswith(".vtt")):
+                await message.reply("⚠️ Please send a .srt, .vtt, or .ass file.")
                 return
             status = await message.reply("⬇️ Downloading subtitle…", reply_markup=CANCEL_KB)
             path = await download_media(client, message, status, cancel, "Download")
             if not path:
                 workflow.clear_state(uid); return
 
-            ext = os.path.splitext(fname)[1].lower()
+            ext = os.path.splitext(fname)[1].lower().strip(".")
             # Auto-detect direction
             workflow.set_state(uid, sub=path, step="await_dir", origin_msg_id=message.id)
             buttons = []
-            if ext == ".srt":
-                buttons.append(InlineKeyboardButton("SRT → ASS", callback_data="conv_srt2ass"))
-            else:
-                buttons.append(InlineKeyboardButton("ASS → SRT", callback_data="conv_ass2srt"))
-            buttons.append(InlineKeyboardButton("✖️ CANCEL ✖️", callback_data="cancel"))
+            if ext != "srt":
+                buttons.append([InlineKeyboardButton(f"{ext.upper()} → SRT", callback_data=f"conv_{ext}2srt")])
+            if ext != "ass":
+                buttons.append([InlineKeyboardButton(f"{ext.upper()} → ASS", callback_data=f"conv_{ext}2ass")])
+            if ext != "vtt":
+                buttons.append([InlineKeyboardButton(f"{ext.upper()} → VTT", callback_data=f"conv_{ext}2vtt")])
+            buttons.append([InlineKeyboardButton("✖️ CANCEL ✖️", callback_data="cancel")])
 
             await status.edit_text(
                 "🔄 <b>Choose conversion direction:</b>",
                 parse_mode=ParseMode.HTML,
-                reply_markup=InlineKeyboardMarkup([buttons]),
+                reply_markup=InlineKeyboardMarkup(buttons),
             )
 
 
