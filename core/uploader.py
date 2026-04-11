@@ -19,23 +19,21 @@ async def upload_video(
     tracker = ProgressTracker()
     last_edit = [0.0]
 
+    async def update_msg(text):
+        try:
+            await status_msg.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=status_msg.reply_markup)
+        except Exception:
+            pass
+
     async def progress(current, total):
         if cancel_flag and cancel_flag.is_set():
             raise asyncio.CancelledError("Cancelled by user")
         now = time.time()
-        if now - last_edit[0] < 2.0:
-            return
-        last_edit[0] = now
-        text = tracker.render("Upload", current, total)
-        if status_msg:
-            try:
-                await status_msg.edit_text(
-                    text, 
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=status_msg.reply_markup
-                )
-            except Exception:
-                pass
+        if now - last_edit[0] >= 3.0:
+            last_edit[0] = now
+            text = tracker.render("Upload", current, total)
+            if status_msg:
+                asyncio.create_task(update_msg(text))
 
     try:
         sent = await client.send_document(
