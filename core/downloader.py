@@ -87,7 +87,7 @@ async def download_media(
             
             if total_chunks > 1:
                 remaining_chunks = total_chunks - 1
-                workers = 5
+                workers = 3
                 chunks_per_worker = math.ceil(remaining_chunks / workers)
 
                 async def worker(start_chunk, end_chunk):

@@ -30,7 +30,10 @@ from utils.caption import extract_caption
 from utils.ffmpeg import mux_video, inject_style, convert_subtitle
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-logging.getLogger("pyrogram").setLevel(logging.ERROR)
+logging.getLogger("pyrogram").setLevel(logging.CRITICAL)
+logging.getLogger("pyrogram.session.session").setLevel(logging.CRITICAL)
+logging.getLogger("pyrogram.client").setLevel(logging.CRITICAL)
+logging.getLogger("pyrogram.network").setLevel(logging.CRITICAL)
 logger = logging.getLogger(__name__)
 
 # ──────────────────────────────────────────────
