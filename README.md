@@ -1,63 +1,69 @@
-🚀 Friction Mux Bot (Ultra Pro - HF Ready)
+---
 
-A high-performance Telegram mux bot with subtitle handling, leech server, caching, and async processing — optimized for Hugging Face Spaces.
+title: Friction Mux Bot
+emoji: 🤖
+colorFrom: purple
+colorTo: blue
+sdk: python
+python_version: "3.10"
+app_file: bot.py
+pinned: false
+
+🚀 Friction Mux Bot (Ultra Pro)
+
+A high-performance Telegram mux bot with subtitle support, caching, leech server, and async processing — optimized for Hugging Face Spaces.
 
 ---
 
-⚙️ Runtime Configuration (Hugging Face Spaces)
+⚙️ Hugging Face Setup
 
 🧩 Space Settings
 
-- SDK: Docker (recommended) OR Python
-- Hardware: CPU (16GB RAM recommended)
-- Port: "7860"
-
----
-
-📦 Required Dependencies
-
-Make sure these are available in your Space:
-
-System Packages
-
-ffmpeg
-aria2
-
-Python Packages (auto-installed via requirements.txt)
-
-telethon
-aiohttp
+- SDK: Python
+- Hardware: CPU (16GB recommended)
+- Port: 7860 (auto-used)
 
 ---
 
 🔐 Environment Variables
 
-Set these in HF Space → Settings → Variables
+Go to Settings → Variables and add:
 
 API_ID=your_api_id
 API_HASH=your_api_hash
 BOT_TOKEN=your_bot_token
 
-OWNER_ID=your_telegram_id
+OWNER_ID=your_telegram_user_id
 AUTHORIZED_USERS=123456789 987654321
 
 PUBLIC_URL=https://your-space-name.hf.space
-HTTP_PORT=7860
 
 ---
 
-▶️ Startup Command
+▶️ Run Command
 
 CMD ["python", "bot.py"]
+---
+
+📦 Requirements
+
+System Dependencies (IMPORTANT)
+
+Make sure your Space has:
+
+- ffmpeg
+- aria2
+
+If not, switch to Docker Space (recommended for full performance)
 
 ---
 
-🌐 Leech Server
+Python Dependencies
 
-- Runs automatically on port "7860"
-- Files >2GB are served via:
+Installed via "requirements.txt":
 
-https://your-space.hf.space/<filename>
+telethon
+aiohttp
 
 ---
 
@@ -67,12 +73,17 @@ https://your-space.hf.space/<filename>
 
 - Only OWNER + AUTHORIZED_USERS allowed
 
+---
+
 🎬 Mux System
 
 - Softsub ".ass" → ".mkv"
-- "-c copy" (no re-encode)
-- Works with/without audio
-- Metadata: "ENGLISH @TheFrictionRealm"
+- No re-encode ("-c copy")
+- Works with or without audio
+- Metadata:
+  ENGLISH @TheFrictionRealm
+
+---
 
 ⏳ Flexible Subtitle Flow
 
@@ -82,61 +93,90 @@ After "/mux":
 - Download subtitle via URL
 - Skip subtitle
 
-⚡ High-Speed System
+---
 
-- aria2 multi-thread download
-- async processing
+⚡ High-Speed Download
+
+- aria2 multi-threaded download
+- Async processing
+
+---
 
 📊 Progress System
 
-- Speed, ETA, progress bar
+- Progress bar (■ □)
+- Speed (MB/s)
+- ETA + elapsed time
 
-🧠 Cache System
+---
+
+🧠 Smart Cache
 
 - file_id reuse
 - TTL: 2 hours
 - "/cache" command
 
-🌐 Leech System
+---
 
-- Auto for files >2GB
-- Direct HTTP access
+🌐 Leech Server
+
+- Files >2GB automatically served via HTTP
+- Public links generated
+
+Example:
+
+https://your-space.hf.space/filename.mkv
+
+---
 
 🛑 Cancel System
 
-- Inline button
-- Stops active tasks
+- Inline button: ✖️ CANCEL ✖️
+- Stops:
+  - Download
+  - Upload
+  - Processing
+
+---
 
 🧹 Auto Cleanup
 
-- Clears temp files after task
+- Deletes temp files after every task
+- Prevents storage overflow
+
+---
 
 🎨 Subtitle Tools
 
-- "/convert"
-- "/style"
+- "/convert" → format conversion
+- "/style" → convert to ".ass"
+
+---
 
 ⚡ Speed Test
 
 - "/speed"
+- Measures upload performance
 
 ---
 
 ⚠️ Important Notes
 
 - Telegram upload speed is the main bottleneck
-- HF disk I/O can affect performance
-- Ensure enough storage for large mux operations
+- Hugging Face disk speed affects performance
+- Large mux jobs require enough storage
 
 ---
 
 🧪 Debugging
 
-If bot doesn’t respond:
+If bot fails:
 
 - Check logs in HF Space
 - Verify environment variables
-- Ensure ffmpeg + aria2 are installed
+- Ensure:
+  - ffmpeg installed
+  - aria2 installed
 
 ---
 
@@ -144,17 +184,16 @@ If bot doesn’t respond:
 
 ✔ Production Ready
 ✔ Async Safe
-✔ Multi-user capable
-✔ HF Compatible
+✔ Multi-user Support
+✔ Hugging Face Compatible
 
 ---
 
-💡 Tip
+💡 Performance Tips
 
-For maximum speed:
-
-- Use high-quality HF hardware
-- Avoid simultaneous heavy mux jobs
+- Avoid running many mux jobs at once
+- Use smaller test files first
+- Monitor HF logs for bottlenecks
 
 ---
 
