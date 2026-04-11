@@ -7,7 +7,8 @@ import shutil
 CINEMATIC_ASS_HEADER = """\
 [Script Info]
 ScriptType: v4.00+
-PlayResX:
+PlayResX: 1920
+PlayResY: 816
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
@@ -67,11 +68,6 @@ async def mux_video(video_path: str, sub_path: str, out_path: str, thumb_path: s
     await run_ffmpeg(*cmd)
 
 
-async def srt_to_ass_ffmpeg(srt_path: str, ass_path: str):
-    """Basic SRT→ASS conversion via FFmpeg."""
-    await run_ffmpeg("-i", srt_path, ass_path)
-
-
 async def inject_style(input_path: str, output_path: str, mode: str):
     """
     input_path: .srt or .ass
@@ -80,13 +76,14 @@ async def inject_style(input_path: str, output_path: str, mode: str):
     """
     ext = os.path.splitext(input_path)[1].lower()
 
-    # Convert SRT to ASS first if needed
-    if ext == ".srt":
-        tmp_ass = input_path.replace(".srt", "_tmp.ass")
-        await srt_to_ass_ffmpeg(input_path, tmp_ass)
+    # Convert non-ASS to ASS first if needed
+    if ext in [".srt", ".vtt"]:
+        tmp_ass = input_path.rsplit(".", 1)[0] + "_tmp.ass"
+        await convert_subtitle(input_path, tmp_ass)
         working = tmp_ass
     else:
         working = input_path
+        tmp_ass = None
 
     with open(working, "r", encoding="utf-8", errors="ignore") as f:
         content = f.read()
@@ -97,6 +94,9 @@ async def inject_style(input_path: str, output_path: str, mode: str):
         raise ValueError("Could not find [Events] block in subtitle file.")
     events_block = events_match.group(1)
 
+    # Force all dialogue lines to use the 'Default' style
+    events_block = re.sub(r"^(Dialogue:\s*[^,]*,[^,]*,[^,]*,)[^,]*(,.*)$", r"\g<1>Default\g<2>", events_block, flags=re.MULTILINE)
+
     header = CINEMATIC_ASS_HEADER if mode == "cinematic" else FULL4K_ASS_HEADER
     final = header.rstrip() + "\n\n" + events_block.strip() + "\n"
 
@@ -104,7 +104,7 @@ async def inject_style(input_path: str, output_path: str, mode: str):
         f.write(final)
 
     # Cleanup tmp
-    if ext == ".srt" and os.path.exists(tmp_ass):
+    if tmp_ass and os.path.exists(tmp_ass):
         os.remove(tmp_ass)
 
 

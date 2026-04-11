@@ -3,6 +3,7 @@ import os
 import time
 from pyrogram import Client
 from pyrogram.enums import ParseMode
+from pyrogram.errors import FloodWait
 from pyrogram.types import Message
 from utils.progress import ProgressTracker
 
@@ -58,6 +59,15 @@ async def download_media(
     try:
         # Parallel chunk downloading for massive files
         if file_size > 10 * 1024 * 1024:
+            # Pre-authenticate to the media DC sequentially to avoid auth export floods
+            try:
+                async for _ in client.stream_media(message, limit=1):
+                    break
+            except FloodWait as e:
+                await asyncio.sleep(e.value)
+            except Exception:
+                pass
+
             chunk_size = 1024 * 1024
             total_chunks = (file_size + chunk_size - 1) // chunk_size
             
@@ -86,8 +96,12 @@ async def download_media(
                                 f.write(data)
                                 downloaded[0] += len(data)
                                 await progress(downloaded[0], file_size)
+                        except FloodWait as e:
+                            await asyncio.sleep(e.value + 1)
+                            queue.put_nowait((chunk_idx, retries))
                         except Exception:
-                            if retries < 3:
+                            if retries < 5:
+                                await asyncio.sleep(1)
                                 queue.put_nowait((chunk_idx, retries + 1))
                             else:
                                 error_event.set()
