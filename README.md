@@ -1,12 +1,9 @@
 ---
-title: Friction Mux Bot
+title: FrictionBot
 emoji: 🤖
 colorFrom: purple
 colorTo: blue
-sdk: python
-sdk_version: "3.10"
-python_version: "3.10"
-app_file: bot.py
+sdk: docker
 pinned: false
 ---
 
