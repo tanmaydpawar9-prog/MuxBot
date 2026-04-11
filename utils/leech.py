@@ -26,4 +26,28 @@ def _app() -> web.Application:
 def start_server() -> None:
     Path(LEECH_DIR).mkdir(parents=True, exist_ok=True)
     app = _app()
-    web.run_app(app, host="0.0.0.0", port=HTTP_PORT, print=None)
+    from aiohttp import web
+import os
+from config import LEECH_DIR, HTTP_PORT
+
+async def start_server():
+    app = web.Application()
+
+    async def handle(request):
+        name = request.match_info['name']
+        path = os.path.join(LEECH_DIR, name)
+
+        if not os.path.exists(path):
+            raise web.HTTPNotFound()
+
+        return web.FileResponse(path)
+
+    app.router.add_get('/{name}', handle)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+
+    site = web.TCPSite(runner, "0.0.0.0", HTTP_PORT)
+    await site.start()
+
+    print(f"Leech server running on port {HTTP_PORT}")
