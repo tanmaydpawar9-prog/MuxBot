@@ -2,8 +2,12 @@ import asyncio
 import time
 from pyrogram import Client
 from pyrogram.enums import ParseMode
-from pyrogram.types import Message
+from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from utils.progress import ProgressTracker
+
+CANCEL_KB = InlineKeyboardMarkup([[
+    InlineKeyboardButton("✖️ CANCEL ✖️", callback_data="cancel")
+]])
 
 
 async def upload_video(
@@ -21,7 +25,7 @@ async def upload_video(
 
     async def update_msg(text):
         try:
-            await status_msg.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=status_msg.reply_markup)
+            await status_msg.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=CANCEL_KB)
         except Exception:
             pass
 

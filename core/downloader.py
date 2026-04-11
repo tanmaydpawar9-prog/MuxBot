@@ -5,11 +5,15 @@ import math
 from pyrogram import Client
 from pyrogram.enums import ParseMode
 from pyrogram.errors import FloodWait
-from pyrogram.types import Message
+from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from utils.progress import ProgressTracker
 
 DOWNLOAD_DIR = "downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+
+CANCEL_KB = InlineKeyboardMarkup([[
+    InlineKeyboardButton("✖️ CANCEL ✖️", callback_data="cancel")
+]])
 
 
 async def download_media(
@@ -40,9 +44,16 @@ async def download_media(
 
     output_path = os.path.join(DOWNLOAD_DIR, file_name)
 
+    # Force fresh download to clear broken sparse files from previous versions
+    if os.path.exists(output_path):
+        try:
+            os.remove(output_path)
+        except Exception:
+            pass
+
     async def update_msg(text):
         try:
-            await status_msg.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=status_msg.reply_markup)
+            await status_msg.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=CANCEL_KB)
         except Exception:
             pass
 
