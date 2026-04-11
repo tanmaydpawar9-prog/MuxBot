@@ -1,5 +1,6 @@
 from __future__ import annotations
 import threading
+import asyncio
 
 from telethon import TelegramClient
 
