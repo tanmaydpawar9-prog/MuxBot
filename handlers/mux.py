@@ -1,1 +1,173 @@
+from __future__ import annotations
+import asyncio
+import os
+import uuid
+from pathlib import Path
+
+from telethon import Button, events
+
+from config import WORK_DIR, LEECH_DIR, MAX_TG_SIZE, PUBLIC_URL
+from utils.access import is_authorized
+from utils.state import JobState
+from utils.download import aria2_download, download_telegram_media
+from utils.ffmpeg import mux_subtitles
+from utils.caption import generate_caption
+from utils.upload import send_document
+from utils.cancel import register, pop
+from utils.cleanup import cleanup_job, ensure_dirs
+from utils.cache import put, get
+from utils.progress import build_bar
+
+def _subtitle_buttons():
+    return [
+        [
+            Button.inline("📎 Send subtitle later", data=b"sub_later"),
+            Button.inline("⬇️ Download subtitle online", data=b"sub_online"),
+        ],
+        [
+            Button.inline("⏭ Skip subtitle", data=b"sub_skip"),
+        ],
+        [
+            Button.inline("✖️ CANCEL ✖️", data=b"cancel"),
+        ],
+    ]
+
+async def _ask_sub_options(event):
+    await event.reply(
+        "Send subtitle (.ass), or choose one:",
+        buttons=_subtitle_buttons(),
+    )
+
+async def register_mux_handlers(client, state_store: dict[int, JobState]):
+    ensure_dirs()
+
+    @client.on(events.NewMessage(pattern=r"^/mux$"))
+    async def mux_start(event):
+        if not is_authorized(event.sender_id):
+            return
+        state_store[event.sender_id] = JobState(stage="waiting_video")
+        await event.reply("Send the video file you want to mux.")
+
+    @client.on(events.NewMessage)
+    async def mux_message_router(event):
+        if not event.is_private or not is_authorized(event.sender_id):
+            return
+
+        uid = event.sender_id
+        text = (event.raw_text or "").strip()
+        st = state_store.get(uid)
+
+        if not st:
+            return
+
+        # 1) waiting for video
+        if st.stage == "waiting_video" and event.file:
+            if not event.file.mime_type or not event.file.mime_type.startswith("video/"):
+                return
+            st.video_path = await download_telegram_media(event.message, WORK_DIR)
+            st.stage = "waiting_subtitle_choice"
+            await _ask_sub_options(event)
+            return
+
+        # 2) waiting for subtitle file or output name / URL / delay
+        if st.stage == "waiting_subtitle_choice":
+            if event.file:
+                st.subtitle_path = await download_telegram_media(event.message, WORK_DIR)
+                st.stage = "waiting_output_name"
+                await event.reply("Send the output name (without extension).")
+                return
+
+            if text.startswith("http://") or text.startswith("https://"):
+                st.subtitle_url = text
+                st.stage = "download_subtitle_online"
+                await event.reply("Downloading subtitle...")
+                sub_name = f"{uuid.uuid4().hex}.ass"
+                st.subtitle_path = await aria2_download(text, sub_name)
+                st.stage = "waiting_output_name"
+                await event.reply("Subtitle ready. Send the output name (without extension).")
+                return
+
+            if text.lower() == "/skip":
+                st.subtitle_path = None
+                st.stage = "waiting_output_name"
+                await event.reply("No subtitle selected. Send output name (without extension).")
+                return
+
+            return
+
+        # 3) waiting for output name
+        if st.stage == "waiting_output_name" and text and not text.startswith("/"):
+            st.output_name = text.strip() + ".mkv"
+            st.task_id = uuid.uuid4().hex
+            st.stage = "processing"
+
+            progress_msg = await event.reply("Starting...")
+
+            async def run_job():
+                try:
+                    out_path = os.path.join(WORK_DIR, st.output_name)
+                    muxed = await mux_subtitles(
+                        st.video_path,
+                        out_path,
+                        subtitle=st.subtitle_path,
+                    )
+
+                    size = os.path.getsize(muxed)
+                    caption = generate_caption(st.output_name)
+
+                    if size <= MAX_TG_SIZE:
+                        await send_document(
+                            client,
+                            event.chat_id,
+                            muxed,
+                            caption=caption,
+                            progress_message=progress_msg,
+                            user_id=uid,
+                        )
+                    else:
+                        Path(LEECH_DIR).mkdir(parents=True, exist_ok=True)
+                        leech_path = os.path.join(LEECH_DIR, os.path.basename(muxed))
+                        if os.path.exists(leech_path):
+                            os.remove(leech_path)
+                        os.replace(muxed, leech_path)
+                        link = f"{PUBLIC_URL}/{os.path.basename(leech_path)}" if PUBLIC_URL else os.path.basename(leech_path)
+                        await event.reply(f"File is too large for Telegram.\nDownload: {link}")
+
+                    put(event.message.file.id if event.message.file else st.task_id, muxed)
+                finally:
+                    cleanup_job([st.video_path, st.subtitle_path, st.thumb_path])
+                    pop(uid)
+                    state_store.pop(uid, None)
+
+            task = asyncio.create_task(run_job())
+            register(uid, task)
+            return
+
+    @client.on(events.CallbackQuery(data=b"sub_later"))
+    async def _(event):
+        if not is_authorized(event.sender_id):
+            return
+        st = state_store.get(event.sender_id)
+        if st:
+            st.stage = "waiting_subtitle_choice"
+        await event.answer("Send the subtitle file when ready.")
+
+    @client.on(events.CallbackQuery(data=b"sub_online"))
+    async def _(event):
+        if not is_authorized(event.sender_id):
+            return
+        st = state_store.get(event.sender_id)
+        if st:
+            st.stage = "waiting_subtitle_choice"
+        await event.answer("Send a subtitle URL in chat.")
+
+    @client.on(events.CallbackQuery(data=b"sub_skip"))
+    async def _(event):
+        if not is_authorized(event.sender_id):
+            return
+        st = state_store.get(event.sender_id)
+        if st:
+            st.subtitle_path = None
+            st.stage = "waiting_output_name"
+        await event.answer("Subtitle skipped. Send output name.")
 
