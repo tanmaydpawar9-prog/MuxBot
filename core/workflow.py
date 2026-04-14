@@ -20,8 +20,10 @@ import asyncio
 
 # user_id -> dict
 _state: dict[int, dict] = {}
-# user_id -> asyncio.Event (cancel)
+# msg_id -> asyncio.Event (cancel)
 _cancel_flags: dict[int, asyncio.Event] = {}
+# user_id -> set of msg_ids
+_user_tasks: dict[int, set[int]] = {}
 
 
 def get_state(user_id: int) -> dict:
@@ -38,16 +40,24 @@ def clear_state(user_id: int):
     _state.pop(user_id, None)
 
 
-def get_cancel_flag(user_id: int) -> asyncio.Event:
-    if user_id not in _cancel_flags:
-        _cancel_flags[user_id] = asyncio.Event()
-    return _cancel_flags[user_id]
+def get_cancel_flag(user_id: int, msg_id: int) -> asyncio.Event:
+    if msg_id not in _cancel_flags:
+        _cancel_flags[msg_id] = asyncio.Event()
+    if user_id not in _user_tasks:
+        _user_tasks[user_id] = set()
+    _user_tasks[user_id].add(msg_id)
+    return _cancel_flags[msg_id]
 
+def clear_cancel_flag(user_id: int, msg_id: int):
+    _cancel_flags.pop(msg_id, None)
+    if user_id in _user_tasks and msg_id in _user_tasks[user_id]:
+        _user_tasks[user_id].remove(msg_id)
 
-def reset_cancel_flag(user_id: int):
-    _cancel_flags[user_id] = asyncio.Event()
+def cancel_msg(msg_id: int):
+    if msg_id in _cancel_flags:
+        _cancel_flags[msg_id].set()
 
 
 def cancel_user(user_id: int):
-    flag = get_cancel_flag(user_id)
-    flag.set()
+    for msg_id in list(_user_tasks.get(user_id, [])):
+        cancel_msg(msg_id)
