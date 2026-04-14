@@ -1076,7 +1076,11 @@ async def _handle_use_permanent_file(client, cq: CallbackQuery, file_type: str):
     if file_type == "sub":
         # For mux flow, move to await_thumb
         if state.get("flow") == "mux":
-            await status_message.edit_text("✅ <b>Permanent subtitle loaded!</b>\n\n🖼 <b>Step 3/4 — Send a thumbnail image or skip.</b>", parse_mode=ParseMode.HTML, reply_markup=CANCEL_KB)
+            reply_markup = InlineKeyboardMarkup(_get_thumb_kb(uid) + [
+                [InlineKeyboardButton("⏭ Skip Thumbnail", callback_data="skip_thumb")],
+                [InlineKeyboardButton("✖️ CANCEL ✖️", callback_data="cancel")]
+            ])
+            await status_message.edit_text("✅ <b>Permanent subtitle loaded!</b>\n\n🖼 <b>Step 3/4 — Send a thumbnail image or skip.</b>", parse_mode=ParseMode.HTML, reply_markup=reply_markup)
             workflow.set_state(uid, step="await_thumb")
         # For style/convert flow, move to await_mode/await_dir (re-render buttons)
         elif state.get("flow") == "style":
