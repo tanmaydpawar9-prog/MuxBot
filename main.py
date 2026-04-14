@@ -901,13 +901,15 @@ async def cb_uselast_thumb(client, cq: CallbackQuery):
 @app.on_message(filters.command("clear"))
 @auth_only
 async def cmd_clear(client, message: Message):
+    await _del_cmd(message)
     uid = message.from_user.id
     state = workflow.get_state(uid)
     status_message = state.get("status_message")
     await _delete_status_message(status_message)
     _cleanup_all_temp_for_user(uid) # Do not clear permanent files
     workflow.clear_state(uid)
-    await message.reply("🗑️ All temporary data and state cleared.")
+    temp_msg = await message.reply("🗑️ All temporary data and state cleared.")
+    asyncio.create_task(_schedule_msg_for_deletion(temp_msg, 5))
 
 # ──────────────────────────────────────────────
 # Text handler (filename step in mux flow)
