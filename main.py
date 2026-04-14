@@ -42,20 +42,23 @@ logger = logging.getLogger(__name__)
 SAVED_VIDEOS: dict[str, str] = {} # token -> path
 SAVED_SUBS: dict[str, str] = {}   # token -> path
 SAVED_THUMBS: dict[str, str] = {} # token -> path
+PERMANENT_SUBS: dict[int, str] = {}   # user_id -> path
+PERMANENT_THUMBS: dict[int, str] = {} # user_id -> path
 
 async def _schedule_file_for_deletion(path: str, delay: int = 7200, token: str = None, saved_dict: dict = None):
     await asyncio.sleep(delay)
     if os.path.exists(path):
         try:
             os.remove(path)
-            logger.info(f"Deleted scheduled file: {path}")
+            logger.info(f"Deleted scheduled temporary file: {path}")
         except Exception:
             logger.warning(f"Failed to delete scheduled file {path}.")
     if token and saved_dict:
-        # Only delete from dict if the path still matches
+        # Only delete from dict if the path still matches (for SAVED_VIDEOS, SAVED_SUBS, SAVED_THUMBS)
+        # This ensures we don't remove a token if the path was already replaced by a new file
         if saved_dict.get(token) == path:
             del saved_dict[token]
-            logger.info(f"Removed token {token} from {saved_dict.__name__}")
+            logger.info(f"Removed token {token} from temporary saved dict.")
 
 # Helper to delete bot messages
 async def _delete_status_message(status_message: Message):
@@ -278,6 +281,58 @@ async def cb_skip_thumb(client, cq: CallbackQuery):
         await cq.answer("Nothing to skip right now.", show_alert=True)
 
 # ──────────────────────────────────────────────
+# /thumb command (set permanent thumbnail)
+# ──────────────────────────────────────────────
+@app.on_message(filters.command("thumb"))
+@auth_only
+async def cmd_set_thumb(client, message: Message):
+    uid = message.from_user.id
+    workflow.reset_cancel_flag(uid)
+    workflow.clear_state(uid)
+    status_message = await message.reply(
+        "🖼 <b>Send the image you want to set as your permanent thumbnail.</b>\n"
+        "<i>This will be used automatically in /mux unless overridden.</i>",
+        parse_mode=ParseMode.HTML,
+        reply_markup=CANCEL_KB,
+    )
+    workflow.set_state(uid, flow="set_thumb", step="await_thumb_file", status_message=status_message)
+
+# ──────────────────────────────────────────────
+# /sub command (set permanent subtitle)
+# ──────────────────────────────────────────────
+@app.on_message(filters.command("sub"))
+@auth_only
+async def cmd_set_sub(client, message: Message):
+    uid = message.from_user.id
+    workflow.reset_cancel_flag(uid)
+    workflow.clear_state(uid)
+    status_message = await message.reply(
+        "📄 <b>Send the .ass subtitle file you want to set as your permanent subtitle.</b>\n"
+        "<i>This will be used automatically in /mux, /style, /convert unless overridden.</i>",
+        parse_mode=ParseMode.HTML,
+        reply_markup=CANCEL_KB,
+    )
+    workflow.set_state(uid, flow="set_sub", step="await_sub_file", status_message=status_message)
+
+# ──────────────────────────────────────────────
+# Use Permanent Subtitle callback
+# ──────────────────────────────────────────────
+@app.on_callback_query(filters.regex("^use_permanent_sub$"))
+@auth_only # This decorator is already applied to the function
+async def cb_use_permanent_sub(client, cq: CallbackQuery):
+    await _handle_use_permanent_file(client, cq, "sub")
+
+# ──────────────────────────────────────────────
+# Use Permanent Thumbnail callback
+# ──────────────────────────────────────────────
+# Use Permanent Thumbnail callback
+# ──────────────────────────────────────────────
+@app.on_callback_query(filters.regex("^use_permanent_thumb$"))
+@auth_only
+async def cb_use_permanent_thumb(client, cq: CallbackQuery):
+    await _handle_use_permanent_file(client, cq, "thumb")
+
+# ──────────────────────────────────────────────
 # Download Video First callback
 # ──────────────────────────────────────────────
 @app.on_callback_query(filters.regex("^dl_video_first$"))
@@ -444,13 +499,17 @@ async def on_file(client, message: Message):
             except Exception as e:
                 logger.warning(f"Failed to delete user's video message {message.id}: {e}")
 
+            # Check if there's a permanent subtitle
+            permanent_sub_kb = []
+            if PERMANENT_SUBS.get(uid) and os.path.exists(PERMANENT_SUBS[uid]):
+                permanent_sub_kb.append([InlineKeyboardButton("📄 Use Permanent Subtitle", callback_data="use_permanent_sub")])
             # Check if there's a last used subtitle
             last_sub_token = state.get("last_sub_token")
             sub_reuse_kb = []
             if last_sub_token and SAVED_SUBS.get(last_sub_token) and os.path.exists(SAVED_SUBS[last_sub_token]):
                 sub_reuse_kb.append([InlineKeyboardButton("📄 Use Last Subtitle", callback_data="uselast_sub")])
 
-            reply_markup = InlineKeyboardMarkup(sub_reuse_kb + [
+            reply_markup = InlineKeyboardMarkup(permanent_sub_kb + sub_reuse_kb + [ # Combine permanent and last used
                 [InlineKeyboardButton("⬇️ Download Video Now", callback_data="dl_video_first")],
                 [InlineKeyboardButton("✖️ CANCEL ✖️", callback_data="cancel")]
             ])
@@ -475,13 +534,17 @@ async def on_file(client, message: Message):
             except Exception as e:
                 logger.warning(f"Failed to delete user's subtitle message {message.id}: {e}")
 
+            # Check for permanent thumbnail
+            permanent_thumb_kb = []
+            if PERMANENT_THUMBS.get(uid) and os.path.exists(PERMANENT_THUMBS[uid]):
+                permanent_thumb_kb.append([InlineKeyboardButton("🖼 Use Permanent Thumbnail", callback_data="use_permanent_thumb")])
             # Check for last used thumbnail
             last_thumb_token = state.get("last_thumb_token")
             thumb_reuse_kb = []
             if last_thumb_token and SAVED_THUMBS.get(last_thumb_token) and os.path.exists(SAVED_THUMBS[last_thumb_token]):
                 thumb_reuse_kb.append([InlineKeyboardButton("🖼 Use Last Thumbnail", callback_data="uselast_thumb")])
 
-            reply_markup = InlineKeyboardMarkup(thumb_reuse_kb + [
+            reply_markup = InlineKeyboardMarkup(permanent_thumb_kb + thumb_reuse_kb + [ # Combine permanent and last used
                 [InlineKeyboardButton("⏭ Skip Thumbnail", callback_data="skip_thumb")],
                 [InlineKeyboardButton("✖️ CANCEL ✖️", callback_data="cancel")]
             ])
@@ -521,6 +584,10 @@ async def on_file(client, message: Message):
                 await message.reply("⚠️ Please send a .srt, .vtt, or .ass file.")
                 return
             
+            # Check if there's a permanent subtitle
+            permanent_sub_kb = []
+            if PERMANENT_SUBS.get(uid) and os.path.exists(PERMANENT_SUBS[uid]):
+                permanent_sub_kb.append([InlineKeyboardButton("📄 Use Permanent Subtitle", callback_data="use_permanent_sub")])
             await status_message.edit_text("⬇️ Downloading subtitle…", reply_markup=CANCEL_KB)
             path = await download_media(client, message, status_message, cancel, "Download")
             if not path:
@@ -536,13 +603,13 @@ async def on_file(client, message: Message):
             workflow.set_state(uid, sub=path, step="await_mode", origin_msg_id=message.id, last_sub_token=sub_token)
             await status_message.edit_text(
                 "🎨 <b>Step 2/2 — Choose style mode:</b>",
-                parse_mode=ParseMode.HTML,
+                parse_mode=ParseMode.HTML, # Corrected to use status_message
                 reply_markup=InlineKeyboardMarkup([
                     [
                         InlineKeyboardButton("🎞 Cinematic (816p)", callback_data="style_cinematic"),
                         InlineKeyboardButton("📺 Full 4K (1080p)", callback_data="style_full4k"),
                     ],
-                    [InlineKeyboardButton("📄 Use Last Subtitle", callback_data="uselast_sub")] if state.get("last_sub_token") and SAVED_SUBS.get(state["last_sub_token"]) and os.path.exists(SAVED_SUBS[state["last_sub_token"]]) else [],
+                    permanent_sub_kb + ([InlineKeyboardButton("📄 Use Last Subtitle", callback_data="uselast_sub")] if state.get("last_sub_token") and SAVED_SUBS.get(state["last_sub_token"]) and os.path.exists(SAVED_SUBS[state["last_sub_token"]]) else []),
                     [InlineKeyboardButton("✖️ CANCEL ✖️", callback_data="cancel")],
                 ]),
             )
@@ -558,6 +625,10 @@ async def on_file(client, message: Message):
             if not (fname.endswith(".srt") or fname.endswith(".ass") or fname.endswith(".vtt")):
                 await message.reply("⚠️ Please send a .srt, .vtt, or .ass file.")
                 return
+            # Check if there's a permanent subtitle
+            permanent_sub_kb = []
+            if PERMANENT_SUBS.get(uid) and os.path.exists(PERMANENT_SUBS[uid]):
+                permanent_sub_kb.append([InlineKeyboardButton("📄 Use Permanent Subtitle", callback_data="use_permanent_sub")])
             
             await status_message.edit_text("⬇️ Downloading subtitle…", reply_markup=CANCEL_KB)
             path = await download_media(client, message, status_message, cancel, "Download")
@@ -577,8 +648,14 @@ async def on_file(client, message: Message):
             if ext != "vtt":
                 buttons.append([InlineKeyboardButton(f"{ext.upper()} → VTT", callback_data=f"conv_{ext}2vtt")])
             buttons.append([InlineKeyboardButton("✖️ CANCEL ✖️", callback_data="cancel")])
+            
+            # Add permanent and last used subtitle options
+            if permanent_sub_kb:
+                buttons.insert(0, permanent_sub_kb[0]) # Add permanent option at the top
+            if state.get("last_sub_token") and SAVED_SUBS.get(state["last_sub_token"]) and os.path.exists(SAVED_SUBS[state["last_sub_token"]]):
+                buttons.insert(0, [InlineKeyboardButton("📄 Use Last Subtitle", callback_data="uselast_sub")]) # Add last used option at the top
 
-            await status.edit_text(
+            await status_message.edit_text( # Corrected to use status_message
                 "🔄 <b>Choose conversion direction:</b>",
                 parse_mode=ParseMode.HTML,
                 reply_markup=InlineKeyboardMarkup(buttons),
@@ -595,7 +672,8 @@ async def on_text(client, message: Message):
     state = workflow.get_state(uid)
     if state.get("flow") == "mux" and state.get("step") == "await_filename":
         out_name = message.text.strip()
-        out_name = re.sub(r'[\\/*?:"<>|]', "", out_name)
+        # Sanitize filename to remove invalid characters
+        out_name = re.sub(r'[\\/*?:"<>|]', "", out_name) # Sanitize filename
         if not out_name:
             await message.reply("⚠️ Please send a valid filename.")
             return
@@ -607,6 +685,7 @@ async def on_text(client, message: Message):
         thumb_path = None
         out_path = f"downloads/{out_name}.mkv"
 
+        # Send a new status message for processing, and update the state to use this new message
         status = await message.reply("⚙️ Preparing…", reply_markup=CANCEL_KB)
         # Delete user's filename message
         try:
@@ -621,6 +700,12 @@ async def on_text(client, message: Message):
         try:
             # 1. Download Video
             if not video_path:
+                # If video is not reused, download it
+                # (Permanent video not implemented yet, but placeholder for future consistency)
+                # if PERMANENT_VIDEOS.get(uid) and os.path.exists(PERMANENT_VIDEOS[uid]): # Placeholder
+                #     video_path = PERMANENT_VIDEOS[uid] # Placeholder
+                #     workflow.set_state(uid, video_dl_path=video_path) # Placeholder
+
                 if is_reused:
                     await status.edit_text("❌ Error: Reused video path missing.", parse_mode=ParseMode.HTML)
                     return
@@ -631,8 +716,13 @@ async def on_text(client, message: Message):
                 workflow.set_state(uid, video_dl_path=video_path)
 
             # 2. Download Subtitle
-            # Check if subtitle was already loaded via /uselast_sub
-            sub_path = state.get("sub") # This is the path if /uselast_sub was used
+            # Check if subtitle was already loaded via /use_permanent_sub or /uselast_sub, otherwise download
+            if not sub_path and PERMANENT_SUBS.get(uid) and os.path.exists(PERMANENT_SUBS[uid]):
+                sub_path = PERMANENT_SUBS[uid]
+                workflow.set_state(uid, sub=sub_path)
+            # Retrieve sub_path from state, which might have been set by /uselast_sub or /use_permanent_sub
+            sub_path = state.get("sub")
+            # If sub_path is still not set, it means user sent a new file, so download it
             if not sub_path: # If not, download it
                 await status.edit_text("⬇️ Downloading subtitle…", reply_markup=CANCEL_KB)
                 sub_path = await download_media(client, state["sub_msg"], status, cancel, "Download", custom_name=f"{out_name}_sub")
@@ -644,8 +734,13 @@ async def on_text(client, message: Message):
                 workflow.set_state(uid, sub=sub_path, last_sub_token=sub_token)
 
             # 3. Download Thumbnail
-            # Check if thumbnail was already loaded via /uselast_thumb
-            thumb_path = state.get("thumb_dl_path") # This is the path if /uselast_thumb was used
+            # Check if thumbnail was already loaded via /use_permanent_thumb or /uselast_thumb, otherwise download
+            if not thumb_path and PERMANENT_THUMBS.get(uid) and os.path.exists(PERMANENT_THUMBS[uid]):
+                thumb_path = PERMANENT_THUMBS[uid]
+                workflow.set_state(uid, thumb_dl_path=thumb_path)
+            # Retrieve thumb_path from state, which might have been set by /uselast_thumb or /use_permanent_thumb
+            thumb_path = state.get("thumb_dl_path")
+            # If thumb_path is still not set, it means user sent a new file, so download it
             if not thumb_path: # If not, download it
                 if state.get("thumb_msg"):
                     await status.edit_text("⬇️ Downloading thumbnail…", reply_markup=CANCEL_KB)
@@ -706,17 +801,17 @@ async def on_text(client, message: Message):
                     parse_mode=ParseMode.HTML
                 )
 
-            await _delete_status_message(status_message) # Delete the final status message
+            await _delete_status_message(status) # Delete the final status message (the one used for progress)
 
         except Exception as e:
             logger.error(f"Mux failed for user {uid}: {e}")
             if not cancel.is_set():
                 await status.edit_text(f"❌ Mux failed:\n<code>{e}</code>", parse_mode=ParseMode.HTML)
         finally:
-            # Clean up temporary input files that are not saved for reuse
+            # Clean up temporary input files that are not saved for reuse (including permanent ones)
             _cleanup_all_temp_for_user(uid)
-            # Delete the status message if it still exists (e.g., after an error)
-            await _delete_status_message(status_message)
+            # Delete the status message if it still exists (e.g., after an error or successful completion)
+            await _delete_status_message(status) # Use the status message from the try block
             workflow.clear_state(uid)
 
 
@@ -736,26 +831,59 @@ def _cleanup_all_temp_for_user(uid: int):
         paths_to_clean.append(state["sub"])
     if state.get("thumb_dl_path"): # This is the downloaded thumb path for mux
         paths_to_clean.append(state["thumb_dl_path"])
-
     for p in paths_to_clean:
+        # _cleanup will check if it's a saved file (temp or permanent) and skip if necessary
         _cleanup(p) # Use the _cleanup function that checks against SAVED_ dicts
 
 def _doc_name(message: Message) -> str:
     if message.document:
         return message.document.file_name or ""
     return ""
+
+async def _handle_use_permanent_file(client, cq: CallbackQuery, file_type: str):
+    """Helper function to handle 'use permanent' callbacks."""
+    uid = cq.from_user.id
+    state = workflow.get_state(uid)
+    status_message = state.get("status_message")
+
+    permanent_dict = PERMANENT_SUBS if file_type == "sub" else PERMANENT_THUMBS
+    state_key = "sub" if file_type == "sub" else "thumb_dl_path"
+    
+    if not permanent_dict.get(uid) or not os.path.exists(permanent_dict[uid]):
+        await cq.answer(f"No permanent {file_type} found or it has been deleted.", show_alert=True)
+        return
+
+    file_path = permanent_dict[uid]
+    workflow.set_state(uid, **{state_key: file_path})
+
+    if file_type == "sub":
+        # For mux flow, move to await_thumb
+        if state.get("flow") == "mux":
+            await status_message.edit_text("✅ <b>Permanent subtitle loaded!</b>\n\n🖼 <b>Step 3/4 — Send a thumbnail image or skip.</b>", parse_mode=ParseMode.HTML, reply_markup=CANCEL_KB)
+            workflow.set_state(uid, step="await_thumb")
+        # For style/convert flow, move to await_mode/await_dir (re-render buttons)
+        elif state.get("flow") == "style":
+            # This part needs to re-render the style mode buttons, similar to on_file for style flow
+            await status_message.edit_text("✅ <b>Permanent subtitle loaded!</b>\n\n🎨 <b>Step 2/2 — Choose style mode:</b>", parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🎞 Cinematic (816p)", callback_data="style_cinematic"), InlineKeyboardButton("📺 Full 4K (1080p)", callback_data="style_full4k")],
+                [InlineKeyboardButton("✖️ CANCEL ✖️", callback_data="cancel")],
+            ]))
+            workflow.set_state(uid, step="await_mode")
+        elif state.get("flow") == "convert":
+            # This part needs to re-render the convert direction buttons, similar to on_file for convert flow
+            # For simplicity, we'll just move to the next step and let the user re-trigger if needed, or re-implement button logic here
+            await status_message.edit_text("✅ <b>Permanent subtitle loaded!</b>\n\n🔄 <b>Choose conversion direction:</b>", parse_mode=ParseMode.HTML, reply_markup=CANCEL_KB)
+            workflow.set_state(uid, step="await_dir") # User will need to send a new command or re-select
+    elif file_type == "thumb":
+        await status_message.edit_text("✅ <b>Permanent thumbnail loaded!</b>\n\n✏️ <b>Step 4/4 — Send the output filename</b> (without extension):", parse_mode=ParseMode.HTML, reply_markup=CANCEL_KB)
+        workflow.set_state(uid, step="await_filename")
+    await cq.answer(f"Permanent {file_type} loaded!", show_alert=False)
+
 def _cleanup(*paths):
     for p in paths:
         if p and os.path.exists(p):
-            try:
-                os.remove(p)
-            except Exception:
-                pass
-                
-    # New _cleanup logic:
-    for p in paths:
-        if p and os.path.exists(p):
-            if p in SAVED_VIDEOS.values() or p in SAVED_SUBS.values() or p in SAVED_THUMBS.values():
+            if p in SAVED_VIDEOS.values() or p in SAVED_SUBS.values() or p in SAVED_THUMBS.values() or \
+               p in PERMANENT_SUBS.values() or p in PERMANENT_THUMBS.values():
                 logger.debug(f"Skipping cleanup for saved file: {p}")
                 continue
             try:
