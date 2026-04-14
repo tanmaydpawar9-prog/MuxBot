@@ -661,6 +661,65 @@ async def on_file(client, message: Message):
                 reply_markup=InlineKeyboardMarkup(buttons),
             )
 
+    # ── SET PERMANENT THUMBNAIL FLOW ──────────
+    elif flow == "set_thumb":
+        if step == "await_thumb_file":
+            if not (message.photo or (message.document and message.document.mime_type and "image" in message.document.mime_type)):
+                await message.reply("⚠️ Please send an image file for the thumbnail.")
+                return
+            
+            # Delete the user's message
+            try:
+                await message.delete()
+            except Exception as e:
+                logger.warning(f"Failed to delete user's message {message.id}: {e}")
+
+            await status_message.edit_text("⬇️ Downloading thumbnail…", reply_markup=CANCEL_KB)
+            path = await download_media(client, message, status_message, cancel, "Download", custom_name=f"permanent_thumb_{uid}")
+            if not path:
+                _cleanup_all_temp_for_user(uid)
+                workflow.clear_state(uid)
+                return
+            
+            # Delete old permanent thumbnail if exists
+            if PERMANENT_THUMBS.get(uid) and os.path.exists(PERMANENT_THUMBS[uid]):
+                _cleanup(PERMANENT_THUMBS[uid])
+
+            logger.info(f"User {uid} set permanent thumbnail: {path}")
+            PERMANENT_THUMBS[uid] = path
+            workflow.clear_state(uid)
+            await status_message.edit_text("✅ <b>Permanent thumbnail set!</b>", parse_mode=ParseMode.HTML)
+
+    # ── SET PERMANENT SUBTITLE FLOW ──────────
+    elif flow == "set_sub":
+        if step == "await_sub_file":
+            fname = _doc_name(message)
+            if not fname.endswith(".ass"):
+                await message.reply("⚠️ Please send an .ass subtitle file.")
+                return
+            
+            # Delete the user's message
+            try:
+                await message.delete()
+            except Exception as e:
+                logger.warning(f"Failed to delete user's message {message.id}: {e}")
+
+            await status_message.edit_text("⬇️ Downloading subtitle…", reply_markup=CANCEL_KB)
+            path = await download_media(client, message, status_message, cancel, "Download", custom_name=f"permanent_sub_{uid}")
+            if not path:
+                _cleanup_all_temp_for_user(uid)
+                workflow.clear_state(uid)
+                return
+            
+            # Delete old permanent subtitle if exists
+            if PERMANENT_SUBS.get(uid) and os.path.exists(PERMANENT_SUBS[uid]):
+                _cleanup(PERMANENT_SUBS[uid])
+
+            logger.info(f"User {uid} set permanent subtitle: {path}")
+            PERMANENT_SUBS[uid] = path
+            workflow.clear_state(uid)
+            await status_message.edit_text("✅ <b>Permanent subtitle set!</b>", parse_mode=ParseMode.HTML)
+
 
 # ──────────────────────────────────────────────
 # Text handler (filename step in mux flow)
