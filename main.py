@@ -5,6 +5,7 @@ import threading
 import logging
 import secrets
 import re
+import json
 from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
@@ -46,6 +47,27 @@ PERMANENT_SUBS: dict[int, str] = {} # user_id -> path
 PERMANENT_THUMBS: dict[int, str] = {} # user_id -> path
 LAST_SUB_TOKENS: dict[int, str] = {}
 LAST_THUMB_TOKENS: dict[int, str] = {}
+
+PERMANENT_DATA_FILE = "permanent_data.json"
+
+def load_permanent_data():
+    if os.path.exists(PERMANENT_DATA_FILE):
+        try:
+            with open(PERMANENT_DATA_FILE, "r") as f:
+                data = json.load(f)
+                PERMANENT_SUBS.update({int(k): v for k, v in data.get("subs", {}).items()})
+                PERMANENT_THUMBS.update({int(k): v for k, v in data.get("thumbs", {}).items()})
+        except Exception as e:
+            logger.warning(f"Failed to load permanent data: {e}")
+
+def save_permanent_data():
+    try:
+        with open(PERMANENT_DATA_FILE, "w") as f:
+            json.dump({"subs": PERMANENT_SUBS, "thumbs": PERMANENT_THUMBS}, f)
+    except Exception as e:
+        logger.warning(f"Failed to save permanent data: {e}")
+
+load_permanent_data()
 
 async def _schedule_file_for_deletion(path: str, delay: int = 7200, token: str = None, saved_dict: dict = None):
     await asyncio.sleep(delay)
@@ -714,6 +736,7 @@ async def on_file(client, message: Message):
 
             logger.info(f"User {uid} set permanent thumbnail: {path}")
             PERMANENT_THUMBS[uid] = path
+            save_permanent_data()
             workflow.clear_state(uid)
             await status_message.edit_text("✅ <b>Permanent thumbnail set!</b>", parse_mode=ParseMode.HTML)
 
@@ -744,6 +767,7 @@ async def on_file(client, message: Message):
 
             logger.info(f"User {uid} set permanent subtitle: {path}")
             PERMANENT_SUBS[uid] = path
+            save_permanent_data()
             workflow.clear_state(uid)
             await status_message.edit_text("✅ <b>Permanent subtitle set!</b>", parse_mode=ParseMode.HTML)
 
