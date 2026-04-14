@@ -15,8 +15,8 @@ async def upload_video(
     chat_id: int,
     file_path: str,
     caption: str,
-    thumb: str = None,
-    status_msg=None,
+    thumb: str = None, # Path to thumbnail file
+    status_message: Message = None, # The message to edit for progress updates
     cancel_flag: asyncio.Event = None,
     reply_to: int = None,
 ) -> Message | None:
@@ -25,7 +25,7 @@ async def upload_video(
 
     async def update_msg(text):
         try:
-            await status_msg.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=CANCEL_KB)
+            await status_message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=CANCEL_KB)
         except Exception:
             pass
 
@@ -36,7 +36,7 @@ async def upload_video(
         if now - last_edit[0] >= 3.0:
             last_edit[0] = now
             text = tracker.render("Upload", current, total)
-            if status_msg:
+            if status_message:
                 asyncio.create_task(update_msg(text))
 
     try:
@@ -52,6 +52,6 @@ async def upload_video(
     except asyncio.CancelledError:
         return None
     except Exception as e:
-        if status_msg:
-            await status_msg.edit_text(f"❌ Upload failed:\n<code>{e}</code>", parse_mode=ParseMode.HTML)
+        if status_message:
+            await status_message.edit_text(f"❌ Upload failed:\n<code>{e}</code>", parse_mode=ParseMode.HTML)
         return None

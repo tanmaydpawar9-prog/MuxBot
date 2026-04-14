@@ -19,7 +19,7 @@ CANCEL_KB = InlineKeyboardMarkup([[
 async def download_media(
     client: Client,
     message: Message,
-    status_msg: Message,
+    status_message: Message,
     cancel_flag: asyncio.Event,
     action: str = "Download",
     custom_name: str = None,
@@ -53,7 +53,7 @@ async def download_media(
 
     async def update_msg(text):
         try:
-            await status_msg.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=CANCEL_KB)
+            await status_message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=CANCEL_KB)
         except Exception:
             pass
 
@@ -64,7 +64,7 @@ async def download_media(
         if now - last_edit[0] >= 3.0:
             last_edit[0] = now
             text = tracker.render(action, current, total)
-            if status_msg:
+            if status_message:
                 asyncio.create_task(update_msg(text))
 
     try:
@@ -77,9 +77,9 @@ async def download_media(
     except asyncio.CancelledError:
         return None
     except Exception as e:
-        if status_msg:
+        if status_message:
             try:
-                await status_msg.edit_text(f"❌ Download failed:\n<code>{e}</code>", parse_mode=ParseMode.HTML)
+                await status_message.edit_text(f"❌ Download failed:\n<code>{e}</code>", parse_mode=ParseMode.HTML)
             except Exception:
                 pass
         return None
