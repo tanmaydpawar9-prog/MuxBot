@@ -6,8 +6,9 @@ import logging
 import secrets
 import re
 import json
+import urllib.parse
 from datetime import datetime
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
 try:
     import uvloop
@@ -47,6 +48,7 @@ PERMANENT_SUBS: dict[int, str] = {} # user_id -> path
 PERMANENT_THUMBS: dict[int, str] = {} # user_id -> path
 LAST_SUB_TOKENS: dict[int, str] = {}
 LAST_THUMB_TOKENS: dict[int, str] = {}
+SAVED_OUTPUTS: dict[str, str] = {} # token -> path
 
 PERMANENT_DATA_FILE = "permanent_data.json"
 
@@ -130,14 +132,49 @@ def _get_thumb_kb(uid):
 # ──────────────────────────────────────────────
 class _KA(BaseHTTPRequestHandler):
     def do_GET(self):
+        parsed = urllib.parse.urlparse(self.path)
+        if parsed.path.startswith("/dl/"):
+            token = parsed.path.split("/")[-1]
+            file_path = None
+            if token in SAVED_VIDEOS: file_path = SAVED_VIDEOS[token]
+            elif token in SAVED_SUBS: file_path = SAVED_SUBS[token]
+            elif token in SAVED_THUMBS: file_path = SAVED_THUMBS[token]
+            elif token in SAVED_OUTPUTS: file_path = SAVED_OUTPUTS[token]
+            
+            if file_path and os.path.exists(file_path):
+                try:
+                    self.send_response(200)
+                    self.send_header("Content-type", "application/octet-stream")
+                    self.send_header("Content-Disposition", f'attachment; filename="{os.path.basename(file_path)}"')
+                    self.send_header("Content-Length", str(os.path.getsize(file_path)))
+                    self.end_headers()
+                    with open(file_path, "rb") as f:
+                        shutil.copyfileobj(f, self.wfile)
+                    return
+                except Exception as e:
+                    logger.error(f"HTTP Server Error: {e}")
+                    return
+            else:
+                self.send_response(404)
+                self.end_headers()
+                self.wfile.write(b"Not Found")
+                return
+
         self.send_response(200)
         self.end_headers()
         self.wfile.write(b"OK")
     def log_message(self, *_): pass
 
 def _start_keepalive():
-    server = HTTPServer(("0.0.0.0", 7860), _KA)
+    server = ThreadingHTTPServer(("0.0.0.0", 7860), _KA)
     threading.Thread(target=server.serve_forever, daemon=True).start()
+
+def get_base_url():
+    space_host = os.environ.get("SPACE_HOST")
+    if space_host: return f"https://{space_host}"
+    space_id = os.environ.get("SPACE_ID")
+    if space_id: return f"https://{space_id.replace('/', '-').lower()}.hf.space"
+    return "http://127.0.0.1:7860"
 
 # ──────────────────────────────────────────────
 # Pyrogram client
@@ -426,9 +463,10 @@ async def cb_dl_video_first(client, cq: CallbackQuery):
             shutil.move(path, saved_video_path)
             SAVED_VIDEOS[token] = saved_video_path
             asyncio.create_task(_schedule_file_for_deletion(saved_video_path, 7200, token, SAVED_VIDEOS))
+                base_url = get_base_url()
             reuse_msg = await client.send_message(
                 cq.message.chat.id,
-                f"♻️ Video downloaded and saved on server for 2 hours!\nTo reuse this video for another mux, use:\n<code>/reuse {token}</code>",
+                    f"♻️ Video downloaded and saved on server for 2 hours!\nTo reuse this video for another mux, use:\n<code>/reuse {token}</code>\n🔗 <b>Download Link:</b> {base_url}/dl/{token}",
                 parse_mode=ParseMode.HTML
             )
             asyncio.create_task(_schedule_msg_for_deletion(reuse_msg, 7200))
@@ -1051,9 +1089,10 @@ async def on_text(client, message: Message):
                 token = next((k for k, v in SAVED_VIDEOS.items() if v == video_path), None)
             
             if token:
+                base_url = get_base_url()
                 reuse_msg = await client.send_message(
                     message.chat.id,
-                    f"♻️ Video saved on server for 2 hours!\nTo reuse this video for another mux, use:\n<code>/reuse {token}</code>",
+                    f"♻️ Video saved on server for 2 hours!\nTo reuse this video for another mux, use:\n<code>/reuse {token}</code>\n🔗 <b>Download Link:</b> {base_url}/dl/{token}",
                     parse_mode=ParseMode.HTML
                 )
                 asyncio.create_task(_schedule_msg_for_deletion(reuse_msg, 7200))
@@ -1128,7 +1167,7 @@ def _cleanup(*paths):
     for p in paths:
         if p and os.path.exists(p):
             if p in SAVED_VIDEOS.values() or p in SAVED_SUBS.values() or p in SAVED_THUMBS.values() or \
-               p in PERMANENT_SUBS.values() or p in PERMANENT_THUMBS.values():
+               p in PERMANENT_SUBS.values() or p in PERMANENT_THUMBS.values() or p in SAVED_OUTPUTS.values():
                 logger.debug(f"Skipping cleanup for saved file: {p}")
                 continue
             try:
@@ -1245,6 +1284,16 @@ async def on_text(client, message: Message):
                 return
 
             if not sent_msg:
+                base_url = get_base_url()
+                if os.path.exists(out_path):
+                    out_token = secrets.token_hex(4)
+                    SAVED_OUTPUTS[out_token] = out_path
+                    asyncio.create_task(_schedule_file_for_deletion(out_path, 7200, out_token, SAVED_OUTPUTS))
+                    await client.send_message(
+                        message.chat.id,
+                        f"⚠️ Upload failed (file might be over 2GB).\nHowever, your muxed video is saved on the server for 2 hours.\n🔗 <b>Download Link:</b> {base_url}/dl/{out_token}",
+                        parse_mode=ParseMode.HTML
+                    )
                 # Upload failed, uploader handled the error message editing.
                 # Return here so we don't delete the error message!
                 return
@@ -1268,9 +1317,10 @@ async def on_text(client, message: Message):
                 token = next((k for k, v in SAVED_VIDEOS.items() if v == video_path), None)
             
             if token:
+                base_url = get_base_url()
                 reuse_msg = await client.send_message(
                     message.chat.id,
-                    f"♻️ Video saved on server for 2 hours!\nTo reuse this video for another mux, use:\n<code>/reuse {token}</code>",
+                    f"♻️ Video saved on server for 2 hours!\nTo reuse this video for another mux, use:\n<code>/reuse {token}</code>\n🔗 <b>Download Link:</b> {base_url}/dl/{token}",
                     parse_mode=ParseMode.HTML
                 )
                 asyncio.create_task(_schedule_msg_for_deletion(reuse_msg, 7200))
@@ -1318,7 +1368,7 @@ def _cleanup(*paths):
         if p and os.path.exists(p):
             # Check against all saved dictionaries (temporary and permanent)
             if p in SAVED_VIDEOS.values() or p in SAVED_SUBS.values() or p in SAVED_THUMBS.values() or \
-               p in PERMANENT_SUBS.values() or p in PERMANENT_THUMBS.values():
+               p in PERMANENT_SUBS.values() or p in PERMANENT_THUMBS.values() or p in SAVED_OUTPUTS.values():
                 logger.debug(f"Skipping cleanup for saved file: {p}")
                 continue
             try:
