@@ -1025,7 +1025,6 @@ async def on_text(client, message: Message):
                 out_path,
                 caption=caption, # Caption is for the uploaded file
                 thumb=thumb_path,
-                status_msg=status,
                 status_message=status,
                 cancel_flag=cancel,
             )
