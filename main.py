@@ -463,7 +463,7 @@ async def cb_dl_video_first(client, cq: CallbackQuery):
             shutil.move(path, saved_video_path)
             SAVED_VIDEOS[token] = saved_video_path
             asyncio.create_task(_schedule_file_for_deletion(saved_video_path, 7200, token, SAVED_VIDEOS))
-                base_url = get_base_url()
+            base_url = get_base_url()
             reuse_msg = await client.send_message(
                 cq.message.chat.id,
                     f"♻️ Video downloaded and saved on server for 2 hours!\nTo reuse this video for another mux, use:\n<code>/reuse {token}</code>\n🔗 <b>Download Link:</b> {base_url}/dl/{token}",
