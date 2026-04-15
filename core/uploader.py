@@ -54,7 +54,7 @@ async def upload_video(
     except Exception as e:
         if status_message:
             try:
-                await status_message.edit_text(f"❌ Upload failed:\n<code>{e}</code>", parse_mode=ParseMode.HTML) # Log the error
-            except Exception as edit_e:
+                await status_message.edit_text(f"❌ Upload failed:\n<code>{e}</code>", parse_mode=ParseMode.HTML)
+            except Exception as edit_e: # Log the error if editing status message fails
                 logger.warning(f"Failed to edit status message after upload error: {edit_e}")
         return None
