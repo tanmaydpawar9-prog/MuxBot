@@ -28,9 +28,6 @@ Style: Default,Arial,60,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,-1,0,0,0,70,
 
 async def run_ffmpeg(*args):
     """Run FFmpeg with given arguments."""
-    if not shutil.which("ffmpeg"):
-        raise RuntimeError("FFmpeg is not installed or not found in PATH.")
-    
     proc = await asyncio.create_subprocess_exec(
         "ffmpeg", "-y", *args,
         stdout=asyncio.subprocess.PIPE,
@@ -78,12 +75,13 @@ async def inject_style(input_path: str, output_path: str, mode: str):
 
     # Convert non-ASS to ASS first if needed
     if ext in [".srt", ".vtt"]:
-        tmp_ass = input_path.rsplit(".", 1)[0] + "_tmp.ass"
-        await convert_subtitle(input_path, tmp_ass)
-        working = tmp_ass
+        with tempfile.NamedTemporaryFile(suffix=".ass", delete=False) as tmp_file:
+            tmp_ass_path = tmp_file.name
+        await convert_subtitle(input_path, tmp_ass_path)
+        working = tmp_ass_path
     else:
         working = input_path
-        tmp_ass = None
+        tmp_ass_path = None
 
     with open(working, "r", encoding="utf-8", errors="ignore") as f:
         content = f.read()
@@ -91,7 +89,7 @@ async def inject_style(input_path: str, output_path: str, mode: str):
     # Extract [Events] block
     events_match = re.search(r"(\[Events\].*)", content, re.DOTALL)
     if not events_match:
-        raise ValueError("Could not find [Events] block in subtitle file.")
+        raise ValueError("Could not find [Events] block in subtitle file. Is it a valid ASS file?")
     events_block = events_match.group(1)
 
     # Force all dialogue lines to use the 'Default' style
@@ -104,8 +102,8 @@ async def inject_style(input_path: str, output_path: str, mode: str):
         f.write(final)
 
     # Cleanup tmp
-    if tmp_ass and os.path.exists(tmp_ass):
-        os.remove(tmp_ass)
+    if tmp_ass_path and os.path.exists(tmp_ass_path):
+        os.remove(tmp_ass_path)
 
 
 async def convert_subtitle(input_path: str, output_path: str):

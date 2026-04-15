@@ -61,11 +61,11 @@ async def download_media(
         if cancel_flag and cancel_flag.is_set():
             raise asyncio.CancelledError("Cancelled by user")
         now = time.time()
-        if now - last_edit[0] >= 3.0:
+        if now - last_edit[0] >= 1.0:
             last_edit[0] = now
             text = tracker.render(action, current, total)
             if status_message:
-                asyncio.create_task(update_msg(text))
+                asyncio.create_task(update_msg(text)) # Use asyncio.create_task to avoid blocking
 
     try:
         path = await client.download_media(
@@ -79,7 +79,7 @@ async def download_media(
     except Exception as e:
         if status_message:
             try:
-                await status_message.edit_text(f"❌ Download failed:\n<code>{e}</code>", parse_mode=ParseMode.HTML)
-            except Exception:
-                pass
+                await status_message.edit_text(f"❌ Download failed:\n<code>{e}</code>", parse_mode=ParseMode.HTML) # Log the error
+            except Exception as edit_e:
+                logger.warning(f"Failed to edit status message after download error: {edit_e}")
         return None

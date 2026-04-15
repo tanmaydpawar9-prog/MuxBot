@@ -7,6 +7,7 @@ import secrets
 import re
 import json
 import urllib.parse
+import shutil
 from datetime import datetime
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
@@ -48,6 +49,7 @@ PERMANENT_SUBS: dict[int, str] = {} # user_id -> path
 PERMANENT_THUMBS: dict[int, str] = {} # user_id -> path
 LAST_SUB_TOKENS: dict[int, str] = {}
 LAST_THUMB_TOKENS: dict[int, str] = {}
+FFMPEG_AVAILABLE = False # Global flag for ffmpeg availability
 SAVED_OUTPUTS: dict[str, str] = {} # token -> path
 
 PERMANENT_DATA_FILE = "permanent_data.json"
@@ -81,9 +83,9 @@ async def _schedule_file_for_deletion(path: str, delay: int = 7200, token: str =
             logger.warning(f"Failed to delete scheduled file {path}.")
     if token and saved_dict:
         # Only delete from dict if the path still matches
-        if saved_dict.get(token) == path: # This is for SAVED_VIDEOS, SAVED_SUBS, SAVED_THUMBS
+        if saved_dict.get(token) == path: # This is for SAVED_VIDEOS, SAVED_SUBS, SAVED_THUMBS, SAVED_OUTPUTS
             del saved_dict[token]
-            logger.info(f"Removed token {token} from {saved_dict.__name__}")
+            logger.info(f"Removed token {token} from saved dictionary.")
 
 # Helper to delete bot messages
 async def _delete_status_message(status_message: Message):
@@ -168,6 +170,12 @@ class _KA(BaseHTTPRequestHandler):
 def _start_keepalive():
     server = ThreadingHTTPServer(("0.0.0.0", 7860), _KA)
     threading.Thread(target=server.serve_forever, daemon=True).start()
+    global FFMPEG_AVAILABLE
+    if shutil.which("ffmpeg"):
+        logger.info("FFmpeg found in PATH.")
+        FFMPEG_AVAILABLE = True
+    else:
+        logger.error("FFmpeg not found in PATH. Muxing/styling/converting will not work.")
 
 def get_base_url():
     space_host = os.environ.get("SPACE_HOST")
@@ -508,6 +516,11 @@ async def cb_style_mode(client, cq: CallbackQuery):
     cancel = workflow.get_cancel_flag(uid, status_message.id)
 
     logger.info(f"User {uid} applying style {mode} to {sub_path}")
+    if not FFMPEG_AVAILABLE:
+        await status_message.edit_text("❌ FFmpeg is not installed on the server. Cannot apply style.", parse_mode=ParseMode.HTML)
+        _cleanup_all_temp_for_user(uid)
+        workflow.clear_state(uid)
+        return
     try:
         await inject_style(sub_path, out_path, mode)
     except Exception as e:
@@ -565,6 +578,11 @@ async def cb_convert_dir(client, cq: CallbackQuery):
     out_ext = f".{dst_ext}"
     out_path = sub_path.rsplit(".", 1)[0] + "_converted" + out_ext
     await status_message.edit_text("⚙️ Converting…")
+    if not FFMPEG_AVAILABLE:
+        await status_message.edit_text("❌ FFmpeg is not installed on the server. Cannot convert subtitle.", parse_mode=ParseMode.HTML)
+        _cleanup_all_temp_for_user(uid)
+        workflow.clear_state(uid)
+        return
 
     logger.info(f"User {uid} converting {sub_path} direction {direction}")
     try:
@@ -1049,6 +1067,11 @@ async def on_text(client, message: Message):
             # 4. Mux
             await status.edit_text("⚙️ Muxing…", reply_markup=CANCEL_KB)
             logger.info(f"User {uid} started muxing {video_path} + {sub_path} -> {out_path}")
+            if not FFMPEG_AVAILABLE:
+                await status.edit_text("❌ FFmpeg is not installed on the server. Cannot mux video.", parse_mode=ParseMode.HTML)
+                _cleanup_all_temp_for_user(uid)
+                workflow.clear_state(uid)
+                return
             await mux_video(video_path, sub_path, out_path, thumb_path)
 
             if cancel.is_set():
@@ -1056,8 +1079,8 @@ async def on_text(client, message: Message):
 
             # 5. Upload
             caption = extract_caption(out_name + ".mkv")
-            await status.edit_text("📤 Uploading…", reply_markup=CANCEL_KB)
-            await upload_video(
+            await status.edit_text("📤 Uploading…", reply_markup=CANCEL_KB) # This line was already there.
+            sent_msg = await upload_video( # Re-introduce sent_msg assignment
                 client,
                 message.chat.id,
                 out_path,
@@ -1069,6 +1092,19 @@ async def on_text(client, message: Message):
 
             if cancel.is_set():
                 return
+
+            if not sent_msg:
+                base_url = get_base_url()
+                if os.path.exists(out_path):
+                    out_token = secrets.token_hex(4)
+                    SAVED_OUTPUTS[out_token] = out_path
+                    asyncio.create_task(_schedule_file_for_deletion(out_path, 7200, out_token, SAVED_OUTPUTS))
+                    await client.send_message(
+                        message.chat.id,
+                        f"⚠️ Upload failed (file might be over 2GB).\nHowever, your muxed video is saved on the server for 2 hours.\n🔗 <b>Download Link:</b> {base_url}/dl/{out_token}",
+                        parse_mode=ParseMode.HTML
+                    )
+                return # Exit early if upload failed and link was sent
 
             # Delete the local copy of the output file after successful upload
             _cleanup(out_path)
@@ -1102,12 +1138,12 @@ async def on_text(client, message: Message):
         except Exception as e:
             logger.error(f"Mux failed for user {uid}: {e}")
             if not cancel.is_set():
-                await status.edit_text(f"❌ Mux failed:\n<code>{e}</code>", parse_mode=ParseMode.HTML)
+                await status.edit_text(f"❌ Mux failed:\n<code>{e}</code>", parse_mode=ParseMode.HTML) # Keep error message visible
         finally:
             # Clean up temporary input files that are not saved for reuse (including permanent ones)
             _cleanup_all_temp_for_user(uid)
-            # Delete the status message if it still exists (e.g., after an error)
-            await _delete_status_message(status) # Use the status message from the try block
+            # Do NOT delete the status message here so that errors remain visible.
+            # It's deleted on success earlier.
             workflow.clear_cancel_flag(uid, status.id)
             workflow.clear_state(uid)
 
@@ -1177,6 +1213,123 @@ def _cleanup(*paths):
                 logger.warning(f"Failed to delete temporary file {p}: {e}")
 
 # ──────────────────────────────────────────────
+# /uselast_sub command
+# ──────────────────────────────────────────────
+@app.on_callback_query(filters.regex("^uselast_sub$"))
+@auth_only
+async def cb_uselast_sub(client, cq: CallbackQuery):
+    uid = cq.from_user.id
+    state = workflow.get_state(uid)
+    status_message = state.get("status_message")
+    
+    if PERMANENT_SUBS.get(uid) and os.path.exists(PERMANENT_SUBS[uid]):
+        await cq.answer("A permanent subtitle is already set. Use that or upload a new one.", show_alert=True)
+        return
+    
+    last_sub_token = LAST_SUB_TOKENS.get(uid)
+    if not last_sub_token or not SAVED_SUBS.get(last_sub_token) or not os.path.exists(SAVED_SUBS[last_sub_token]):
+        await cq.answer("No last subtitle found or it has expired.", show_alert=True)
+        return
+
+    sub_path = SAVED_SUBS[last_sub_token]
+    
+    # Update state based on current flow
+    flow = state.get("flow")
+    
+    # Check for permanent thumbnail (for mux flow only)
+    permanent_thumb_kb = []
+    if PERMANENT_THUMBS.get(uid) and os.path.exists(PERMANENT_THUMBS[uid]):
+        permanent_thumb_kb.append([InlineKeyboardButton("🖼 Use Permanent Thumbnail", callback_data="use_permanent_thumb")])
+    
+    if flow == "mux":
+        workflow.set_state(uid, sub=sub_path, step="await_thumb")
+        reply_markup = InlineKeyboardMarkup(_get_thumb_kb(uid) + [
+            [InlineKeyboardButton("⏭ Skip Thumbnail", callback_data="skip_thumb")],
+            [InlineKeyboardButton("✖️ CANCEL ✖️", callback_data="cancel")]
+        ])
+        await status_message.edit_text(
+            "✅ <b>Last subtitle loaded!</b>\n\n🖼 <b>Step 3/4 — Send a thumbnail image or skip.</b>",
+            parse_mode=ParseMode.HTML,
+            reply_markup=reply_markup,
+        )
+    elif flow == "style":
+        workflow.set_state(uid, sub=sub_path, step="await_mode", origin_msg_id=cq.message.id)
+        await status_message.edit_text(
+            "✅ <b>Last subtitle loaded!</b>\n\n🎨 <b>Step 2/2 — Choose style mode:</b>",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("🎞 Cinematic (816p)", callback_data="style_cinematic"),
+                    InlineKeyboardButton("📺 Full 4K (1080p)", callback_data="style_full4k"),
+                ],
+                [InlineKeyboardButton("✖️ CANCEL ✖️", callback_data="cancel")],
+            ]),
+        )
+    elif flow == "convert":
+        # This flow needs to determine conversion directions based on the sub_path's extension
+        ext = os.path.splitext(sub_path)[1].lower().strip(".")
+        buttons = []
+        if ext != "srt":
+            buttons.append([InlineKeyboardButton(f"{ext.upper()} → SRT", callback_data=f"conv_{ext}2srt")])
+        if ext != "ass":
+            buttons.append([InlineKeyboardButton(f"{ext.upper()} → ASS", callback_data=f"conv_{ext}2ass")])
+        if ext != "vtt":
+            buttons.append([InlineKeyboardButton(f"{ext.upper()} → VTT", callback_data=f"conv_{ext}2vtt")])
+        buttons.append([InlineKeyboardButton("✖️ CANCEL ✖️", callback_data="cancel")])
+
+        workflow.set_state(uid, sub=sub_path, step="await_dir", origin_msg_id=cq.message.id)
+        await status_message.edit_text(
+            "✅ <b>Last subtitle loaded!</b>\n\n🔄 <b>Choose conversion direction:</b>",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(buttons),
+        )
+    else:
+        await cq.answer("Cannot use last subtitle in this context.", show_alert=True)
+
+# ──────────────────────────────────────────────
+# /uselast_thumb command
+# ──────────────────────────────────────────────
+@app.on_callback_query(filters.regex("^uselast_thumb$"))
+@auth_only
+async def cb_uselast_thumb(client, cq: CallbackQuery):
+    uid = cq.from_user.id
+    state = workflow.get_state(uid)
+    status_message = state.get("status_message")
+    
+    if PERMANENT_THUMBS.get(uid) and os.path.exists(PERMANENT_THUMBS[uid]):
+        await cq.answer("A permanent thumbnail is already set. Use that or upload a new one.", show_alert=True)
+        return
+    
+    last_thumb_token = LAST_THUMB_TOKENS.get(uid)
+    if not last_thumb_token or not SAVED_THUMBS.get(last_thumb_token) or not os.path.exists(SAVED_THUMBS[last_thumb_token]):
+        await cq.answer("No last thumbnail found or it has expired.", show_alert=True)
+        return
+
+    thumb_path = SAVED_THUMBS[last_thumb_token]
+    workflow.set_state(uid, thumb_msg=None, thumb_dl_path=thumb_path, step="await_filename") # Store path directly
+    await status_message.edit_text(
+        "✅ <b>Last thumbnail loaded!</b>\n\n✏️ <b>Step 4/4 — Send the output filename</b> (without extension):",
+        parse_mode=ParseMode.HTML,
+        reply_markup=CANCEL_KB,
+    )
+
+# ──────────────────────────────────────────────
+# /clear command
+# ──────────────────────────────────────────────
+@app.on_message(filters.command("clear"))
+@auth_only
+async def cmd_clear(client, message: Message):
+    await _del_cmd(message)
+    uid = message.from_user.id
+    state = workflow.get_state(uid)
+    status_message = state.get("status_message")
+    await _delete_status_message(status_message)
+    _cleanup_all_temp_for_user(uid) # Do not clear permanent files
+    workflow.clear_state(uid)
+    temp_msg = await message.reply("🗑️ All temporary data and state cleared.")
+    asyncio.create_task(_schedule_msg_for_deletion(temp_msg, 5))
+
+# ──────────────────────────────────────────────
 # Entry point
 # ──────────────────────────────────────────────
 if __name__ == "__main__":
@@ -1184,159 +1337,6 @@ if __name__ == "__main__":
     logger.info("🚀 MuxBot starting…")
     app.run()
 
-
-# ──────────────────────────────────────────────
-# Text handler (filename step in mux flow)
-# ──────────────────────────────────────────────
-@app.on_message(filters.private & filters.text & ~filters.command(["start","help","mux","style","convert","cancel","skip","reuse","reuser", "thumb", "sub", "clear"]))
-@auth_only
-async def on_text(client, message: Message):
-    uid = message.from_user.id
-    state = workflow.get_state(uid)
-    if state.get("flow") == "mux" and state.get("step") == "await_filename":
-        out_name = message.text.strip()
-        # Sanitize filename to remove invalid characters
-        out_name = re.sub(r'[\\/*?:"<>|]', "", out_name)
-        if not out_name:
-            await message.reply("⚠️ Please send a valid filename.")
-            return
-
-        status = state.get("status_message") # This is the message we will edit
-        if not status: # Safety check in case the message was deleted
-            status = await message.reply("⚙️ Preparing…", reply_markup=CANCEL_KB)
-            workflow.set_state(uid, status_message=status)
-        else:
-            await status.edit_text("⚙️ Preparing…", reply_markup=CANCEL_KB)
-
-        is_reused = state.get("is_reused", False)
-        video_path = state.get("video_dl_path")
-        sub_path = None
-        thumb_path = None
-        out_path = f"downloads/{out_name}.mkv"
-
-        cancel = workflow.get_cancel_flag(uid, status.id)
-
-        try:
-            # 1. Download Video
-            if not video_path:
-                if is_reused:
-                    await status.edit_text("❌ Error: Reused video path missing.", parse_mode=ParseMode.HTML)
-                    return
-                await status.edit_text("⬇️ Downloading video…", reply_markup=CANCEL_KB)
-                video_path = await download_media(client, state["video_msg"], status, cancel, "Download", custom_name=f"{out_name}_video")
-                if not video_path:
-                    return
-                workflow.set_state(uid, video_dl_path=video_path)
-
-            # 2. Download Subtitle (or use existing)
-            if not sub_path and PERMANENT_SUBS.get(uid) and os.path.exists(PERMANENT_SUBS[uid]):
-                sub_path = PERMANENT_SUBS[uid]
-                workflow.set_state(uid, sub=sub_path)
-            sub_path = state.get("sub")
-            if not sub_path: # If not, download it
-                await status.edit_text("⬇️ Downloading subtitle…", reply_markup=CANCEL_KB)
-                sub_path = await download_media(client, state["sub_msg"], status, cancel, "Download", custom_name=f"{out_name}_sub")
-                if not sub_path: return
-                # Save this subtitle for potential reuse
-                sub_token = secrets.token_hex(4)
-                SAVED_SUBS[sub_token] = sub_path
-                asyncio.create_task(_schedule_file_for_deletion(sub_path, 7200, sub_token, SAVED_SUBS))
-                LAST_SUB_TOKENS[uid] = sub_token
-
-            # 3. Download Thumbnail (or use existing)
-            if not thumb_path and PERMANENT_THUMBS.get(uid) and os.path.exists(PERMANENT_THUMBS[uid]):
-                thumb_path = PERMANENT_THUMBS[uid]
-                workflow.set_state(uid, thumb_dl_path=thumb_path)
-            thumb_path = state.get("thumb_dl_path")
-            if not thumb_path: # If not, download it
-                if state.get("thumb_msg"):
-                    await status.edit_text("⬇️ Downloading thumbnail…", reply_markup=CANCEL_KB)
-                    thumb_path = await download_media(client, state["thumb_msg"], status, cancel, "Download", custom_name=f"{out_name}_thumb")
-                    if not thumb_path: return
-                    # Save this thumbnail for potential reuse
-                    thumb_token = secrets.token_hex(4)
-                    SAVED_THUMBS[thumb_token] = thumb_path
-                    asyncio.create_task(_schedule_file_for_deletion(thumb_path, 7200, thumb_token, SAVED_THUMBS))
-                    LAST_THUMB_TOKENS[uid] = thumb_token
-
-            # 4. Mux
-            await status.edit_text("⚙️ Muxing…", reply_markup=CANCEL_KB)
-            logger.info(f"User {uid} started muxing {video_path} + {sub_path} -> {out_path}")
-            await mux_video(video_path, sub_path, out_path, thumb_path)
-
-            if cancel.is_set():
-                return
-
-            # 5. Upload
-            caption = extract_caption(out_name + ".mkv")
-            await status.edit_text("📤 Uploading…", reply_markup=CANCEL_KB)
-            sent_msg = await upload_video(
-                client,
-                message.chat.id,
-                out_path,
-                caption=caption,
-                thumb=thumb_path,
-                status_message=status,
-                cancel_flag=cancel,
-            )
-
-            if cancel.is_set():
-                return
-
-            if not sent_msg:
-                base_url = get_base_url()
-                if os.path.exists(out_path):
-                    out_token = secrets.token_hex(4)
-                    SAVED_OUTPUTS[out_token] = out_path
-                    asyncio.create_task(_schedule_file_for_deletion(out_path, 7200, out_token, SAVED_OUTPUTS))
-                    await client.send_message(
-                        message.chat.id,
-                        f"⚠️ Upload failed (file might be over 2GB).\nHowever, your muxed video is saved on the server for 2 hours.\n🔗 <b>Download Link:</b> {base_url}/dl/{out_token}",
-                        parse_mode=ParseMode.HTML
-                    )
-                # Upload failed, uploader handled the error message editing.
-                # Return here so we don't delete the error message!
-                return
-
-            # Delete the local copy of the output file after successful upload
-            _cleanup(out_path)
-
-            # Token logic
-            if not is_reused:
-                token = secrets.token_hex(4)
-                _, ext = os.path.splitext(video_path)
-                saved_video_path = f"downloads/saved_{token}{ext}"
-                try:
-                    shutil.move(video_path, saved_video_path) # Use shutil.move for cross-device rename
-                    SAVED_VIDEOS[token] = saved_video_path
-                    asyncio.create_task(_schedule_file_for_deletion(saved_video_path, 7200, token, SAVED_VIDEOS))
-                    video_path = saved_video_path
-                except Exception:
-                    token = None
-            else:
-                token = next((k for k, v in SAVED_VIDEOS.items() if v == video_path), None)
-            
-            if token:
-                base_url = get_base_url()
-                reuse_msg = await client.send_message(
-                    message.chat.id,
-                    f"♻️ Video saved on server for 2 hours!\nTo reuse this video for another mux, use:\n<code>/reuse {token}</code>\n🔗 <b>Download Link:</b> {base_url}/dl/{token}",
-                    parse_mode=ParseMode.HTML
-                )
-                asyncio.create_task(_schedule_msg_for_deletion(reuse_msg, 7200))
-
-            await _delete_status_message(status) # Delete the progress message ONLY ON SUCCESS
-
-        except Exception as e:
-            logger.error(f"Mux failed for user {uid}: {e}")
-            if not cancel.is_set():
-                await status.edit_text(f"❌ Mux failed:\n<code>{e}</code>", parse_mode=ParseMode.HTML)
-        finally:
-            # Clean up temporary input files that are not saved for reuse (including permanent ones)
-            _cleanup_all_temp_for_user(uid)
-            # Do NOT aggressively delete the status message here so that errors remain visible!
-            workflow.clear_cancel_flag(uid, status.id)
-            workflow.clear_state(uid)
 
 # ──────────────────────────────────────────────
 # Helpers
@@ -1376,6 +1376,123 @@ def _cleanup(*paths):
                 logger.info(f"Cleaned up temporary file: {p}")
             except Exception as e:
                 logger.warning(f"Failed to delete temporary file {p}: {e}")
+
+# ──────────────────────────────────────────────
+# /uselast_sub command
+# ──────────────────────────────────────────────
+@app.on_callback_query(filters.regex("^uselast_sub$"))
+@auth_only
+async def cb_uselast_sub(client, cq: CallbackQuery):
+    uid = cq.from_user.id
+    state = workflow.get_state(uid)
+    status_message = state.get("status_message")
+    
+    if PERMANENT_SUBS.get(uid) and os.path.exists(PERMANENT_SUBS[uid]):
+        await cq.answer("A permanent subtitle is already set. Use that or upload a new one.", show_alert=True)
+        return
+    
+    last_sub_token = LAST_SUB_TOKENS.get(uid)
+    if not last_sub_token or not SAVED_SUBS.get(last_sub_token) or not os.path.exists(SAVED_SUBS[last_sub_token]):
+        await cq.answer("No last subtitle found or it has expired.", show_alert=True)
+        return
+
+    sub_path = SAVED_SUBS[last_sub_token]
+    
+    # Update state based on current flow
+    flow = state.get("flow")
+    
+    # Check for permanent thumbnail (for mux flow only)
+    permanent_thumb_kb = []
+    if PERMANENT_THUMBS.get(uid) and os.path.exists(PERMANENT_THUMBS[uid]):
+        permanent_thumb_kb.append([InlineKeyboardButton("🖼 Use Permanent Thumbnail", callback_data="use_permanent_thumb")])
+    
+    if flow == "mux":
+        workflow.set_state(uid, sub=sub_path, step="await_thumb")
+        reply_markup = InlineKeyboardMarkup(_get_thumb_kb(uid) + [
+            [InlineKeyboardButton("⏭ Skip Thumbnail", callback_data="skip_thumb")],
+            [InlineKeyboardButton("✖️ CANCEL ✖️", callback_data="cancel")]
+        ])
+        await status_message.edit_text(
+            "✅ <b>Last subtitle loaded!</b>\n\n🖼 <b>Step 3/4 — Send a thumbnail image or skip.</b>",
+            parse_mode=ParseMode.HTML,
+            reply_markup=reply_markup,
+        )
+    elif flow == "style":
+        workflow.set_state(uid, sub=sub_path, step="await_mode", origin_msg_id=cq.message.id)
+        await status_message.edit_text(
+            "✅ <b>Last subtitle loaded!</b>\n\n🎨 <b>Step 2/2 — Choose style mode:</b>",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("🎞 Cinematic (816p)", callback_data="style_cinematic"),
+                    InlineKeyboardButton("📺 Full 4K (1080p)", callback_data="style_full4k"),
+                ],
+                [InlineKeyboardButton("✖️ CANCEL ✖️", callback_data="cancel")],
+            ]),
+        )
+    elif flow == "convert":
+        # This flow needs to determine conversion directions based on the sub_path's extension
+        ext = os.path.splitext(sub_path)[1].lower().strip(".")
+        buttons = []
+        if ext != "srt":
+            buttons.append([InlineKeyboardButton(f"{ext.upper()} → SRT", callback_data=f"conv_{ext}2srt")])
+        if ext != "ass":
+            buttons.append([InlineKeyboardButton(f"{ext.upper()} → ASS", callback_data=f"conv_{ext}2ass")])
+        if ext != "vtt":
+            buttons.append([InlineKeyboardButton(f"{ext.upper()} → VTT", callback_data=f"conv_{ext}2vtt")])
+        buttons.append([InlineKeyboardButton("✖️ CANCEL ✖️", callback_data="cancel")])
+
+        workflow.set_state(uid, sub=sub_path, step="await_dir", origin_msg_id=cq.message.id)
+        await status_message.edit_text(
+            "✅ <b>Last subtitle loaded!</b>\n\n🔄 <b>Choose conversion direction:</b>",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(buttons),
+        )
+    else:
+        await cq.answer("Cannot use last subtitle in this context.", show_alert=True)
+
+# ──────────────────────────────────────────────
+# /uselast_thumb command
+# ──────────────────────────────────────────────
+@app.on_callback_query(filters.regex("^uselast_thumb$"))
+@auth_only
+async def cb_uselast_thumb(client, cq: CallbackQuery):
+    uid = cq.from_user.id
+    state = workflow.get_state(uid)
+    status_message = state.get("status_message")
+    
+    if PERMANENT_THUMBS.get(uid) and os.path.exists(PERMANENT_THUMBS[uid]):
+        await cq.answer("A permanent thumbnail is already set. Use that or upload a new one.", show_alert=True)
+        return
+    
+    last_thumb_token = LAST_THUMB_TOKENS.get(uid)
+    if not last_thumb_token or not SAVED_THUMBS.get(last_thumb_token) or not os.path.exists(SAVED_THUMBS[last_thumb_token]):
+        await cq.answer("No last thumbnail found or it has expired.", show_alert=True)
+        return
+
+    thumb_path = SAVED_THUMBS[last_thumb_token]
+    workflow.set_state(uid, thumb_msg=None, thumb_dl_path=thumb_path, step="await_filename") # Store path directly
+    await status_message.edit_text(
+        "✅ <b>Last thumbnail loaded!</b>\n\n✏️ <b>Step 4/4 — Send the output filename</b> (without extension):",
+        parse_mode=ParseMode.HTML,
+        reply_markup=CANCEL_KB,
+    )
+
+# ──────────────────────────────────────────────
+# /clear command
+# ──────────────────────────────────────────────
+@app.on_message(filters.command("clear"))
+@auth_only
+async def cmd_clear(client, message: Message):
+    await _del_cmd(message)
+    uid = message.from_user.id
+    state = workflow.get_state(uid)
+    status_message = state.get("status_message")
+    await _delete_status_message(status_message)
+    _cleanup_all_temp_for_user(uid) # Do not clear permanent files
+    workflow.clear_state(uid)
+    temp_msg = await message.reply("🗑️ All temporary data and state cleared.")
+    asyncio.create_task(_schedule_msg_for_deletion(temp_msg, 5))
 
 # ──────────────────────────────────────────────
 # Entry point

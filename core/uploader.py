@@ -33,11 +33,11 @@ async def upload_video(
         if cancel_flag and cancel_flag.is_set():
             raise asyncio.CancelledError("Cancelled by user")
         now = time.time()
-        if now - last_edit[0] >= 3.0:
+        if now - last_edit[0] >= 1.0:
             last_edit[0] = now
             text = tracker.render("Upload", current, total)
             if status_message:
-                asyncio.create_task(update_msg(text))
+                asyncio.create_task(update_msg(text)) # Use asyncio.create_task to avoid blocking
 
     try:
         sent = await client.send_document(
@@ -53,5 +53,8 @@ async def upload_video(
         return None
     except Exception as e:
         if status_message:
-            await status_message.edit_text(f"❌ Upload failed:\n<code>{e}</code>", parse_mode=ParseMode.HTML)
+            try:
+                await status_message.edit_text(f"❌ Upload failed:\n<code>{e}</code>", parse_mode=ParseMode.HTML) # Log the error
+            except Exception as edit_e:
+                logger.warning(f"Failed to edit status message after upload error: {edit_e}")
         return None
